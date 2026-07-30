@@ -55,7 +55,7 @@ if [[ -n "${ACME_EMAIL:-}" ]]; then
 
   echo "==> Creating Let's Encrypt issuers"
   sed "s|__ACME_EMAIL__|$ACME_EMAIL|g" \
-    "$REPO_ROOT/platform/cluster-issuers.yaml" | kubectl apply -f -
+    "$REPO_ROOT/deploy/platform/cluster-issuers.yaml" | kubectl apply -f -
 else
   echo "==> Skipping cert-manager (set ACME_EMAIL to enable TLS)"
 fi
@@ -64,9 +64,9 @@ if [[ -n "${WITH_OBSERVABILITY:-}" ]]; then
   echo "==> Installing Prometheus and Grafana"
   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
     --namespace monitoring --create-namespace \
-    --values "$REPO_ROOT/platform/observability/values.yaml" \
+    --values "$REPO_ROOT/deploy/platform/observability/values.yaml" \
     --wait --timeout 15m
-  kubectl apply -f "$REPO_ROOT/platform/observability/dashboard.yaml"
+  kubectl apply -f "$REPO_ROOT/deploy/platform/observability/dashboard.yaml"
 else
   echo "==> Skipping observability (set WITH_OBSERVABILITY=1 to enable)"
 fi
@@ -91,7 +91,7 @@ OWNER_LC=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
 
 # The manifests are committed with placeholders so the repo carries no
 # account-specific values; they are substituted at apply time.
-for manifest in "$REPO_ROOT"/argocd/*.yaml; do
+for manifest in "$REPO_ROOT"/deploy/argocd/*.yaml; do
   sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
       -e "s|__OWNER__|$OWNER|g" \
       -e "s|__NODE_IP__|$NODE_IP|g" \
