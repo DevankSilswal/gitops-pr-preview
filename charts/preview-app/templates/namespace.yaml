@@ -1,0 +1,17 @@
+{{- if .Values.namespace.create -}}
+# The namespace is part of the release rather than something ArgoCD conjures
+# via CreateNamespace=true. A namespace created that way is untracked, so it
+# survives pruning and every pull request ever opened leaves an empty namespace
+# behind forever. Templating it here makes ArgoCD its owner, so deleting the
+# Application deletes the namespace and everything still inside it.
+#
+# The negative sync wave guarantees it exists before anything is placed in it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+{{- end }}

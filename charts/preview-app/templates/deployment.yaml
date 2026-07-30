@@ -17,10 +17,16 @@ spec:
       # The app traps SIGTERM and closes its listener, so pods drain quickly
       # when a pull request is closed and the environment is torn down.
       terminationGracePeriodSeconds: 20
+      # Preview environments run code from unmerged branches, which is the
+      # least trusted code in the system. Anything it can be denied, it is.
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ .Values.service.targetPort }}
@@ -51,3 +57,11 @@ spec:
             periodSeconds: 20
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # The root filesystem is read-only, so give the runtime somewhere
+            # legitimate to write.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

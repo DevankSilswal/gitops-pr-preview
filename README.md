@@ -29,7 +29,13 @@ k3s cluster (Oracle Cloud free tier)
 Reviewer opens the URL, posted back as a PR comment
 ```
 
-When the PR closes, the ApplicationSet stops generating that Application and ArgoCD prunes the namespace automatically. A TTL job also expires environments that outlive an open-but-stale PR.
+When the PR closes, the ApplicationSet stops generating that Application and ArgoCD prunes the namespace automatically.
+
+### Lifecycle is a label
+
+An environment exists exactly while its pull request carries the `preview` label. CI adds the label when a PR opens; an hourly job removes it once the PR has been idle past its TTL. Nothing ever deletes a namespace directly — the label *is* the desired state, and ArgoCD reconciles to it.
+
+That matters because the obvious alternative, a cron job that deletes stale namespaces, fights the controller: the ApplicationSet would notice the Application missing and immediately recreate it. Expressing expiry as a change in desired state means the two cooperate instead. Re-adding the label brings the environment back.
 
 ## Components
 
@@ -47,9 +53,16 @@ CI builds artifacts; ArgoCD deploys them. The pipeline holds no cluster credenti
 ## Repository layout
 
 ```
-app/       Sample application that gets deployed into each preview environment
-gitops/    Kubernetes manifests / Helm chart and ArgoCD definitions  (Phase 3+)
-infra/     Terraform for the Oracle Cloud VM and networking          (Phase 2)
+app/                                    Sample service deployed into each environment
+charts/preview-app/                     Helm chart, one release per environment
+deploy/argocd/applicationset-preview.yaml      Pull request generator — the core mechanism
+deploy/argocd/application-prod.yaml            main branch, same chart
+.github/workflows/build.yml             Test, arm64 build, GHCR push, PR comment
+.github/workflows/preview-lifecycle.yml Grants the preview label, expires it on TTL
+deploy/platform/cluster-issuers.yaml           Let's Encrypt issuers for preview TLS
+deploy/platform/observability/                 Prometheus values and Grafana dashboard
+infra/                                  Terraform for the Oracle Cloud VM and k3s
+scripts/bootstrap-cluster.sh            One-shot cluster setup
 ```
 
 The application in `app/` is deliberately trivial. It reports its own environment name, PR number, git SHA, and build time, so that opening a preview URL immediately proves *which* commit is running there. All of it arrives through environment variables set by CI and Kubernetes.
@@ -61,10 +74,10 @@ The application in `app/` is deliberately trivial. It reports its own environmen
 - [x] **Phase 3 — CI.** GitHub Actions runs the tests, then builds and pushes an `arm64` image to GHCR tagged `pr-<number>-<head-sha>`. CI holds no cluster credentials.
 - [x] **Phase 4 — GitOps definitions.** ApplicationSet PR generator and the production Application, both written and YAML-validated.
 - [x] **Phase 5 — Infrastructure as code.** Terraform for the Oracle Cloud VCN and Ampere A1 node, k3s via cloud-init, plus a one-shot cluster bootstrap script. `terraform validate` passes.
-- [ ] **Phase 6 — First live environment.** Blocked only on the Oracle Cloud instance. Apply the Terraform, run the bootstrap script, open a PR.
-- [ ] **Phase 7 — Polish.** TLS via cert-manager, preview URL posted as a PR comment, TTL expiry for stale environments, Grafana dashboard.
+- [x] **Phase 6 — Lifecycle and operations.** Label-driven TTL expiry, preview URL posted as a pull request comment, optional Let's Encrypt TLS, and a Grafana dashboard covering the fleet of environments.
+- [ ] **Phase 7 — First live environment.** Blocked only on the Oracle Cloud instance. Apply the Terraform, run the bootstrap script, label a PR.
 
-Phases 2–5 are written and validated offline but have not yet run against a real cluster; Phase 6 is what proves them.
+Everything through Phase 6 is written and validated offline — `helm lint`, rendered manifests, `terraform validate`, and a real pull request whose CI-published image tag matches what the ApplicationSet asks for. What has *not* run yet is ArgoCD reconciling against a live cluster; Phase 7 is what proves that.
 
 ## Running the sample app locally
 

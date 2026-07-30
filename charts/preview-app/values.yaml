@@ -1,3 +1,9 @@
+namespace:
+  # ArgoCD sets this so the namespace becomes a pruneable part of the release.
+  # Left off for plain `helm install`, where the namespace usually already
+  # exists and is not the chart's to own.
+  create: false
+
 replicaCount: 1
 
 image:
@@ -21,6 +27,27 @@ ingress:
   className: nginx
   # Set per environment, e.g. pr-42.<node-ip>.nip.io
   host: ""
+  tls:
+    # Off by default so a cluster without cert-manager still works. Let's
+    # Encrypt also rate-limits heavily, and preview environments churn through
+    # hostnames faster than almost any other workload.
+    enabled: false
+    clusterIssuer: letsencrypt-staging
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 # Kept small on purpose: a single free-tier node has to hold many
 # concurrent preview environments.

@@ -13,7 +13,9 @@ ARG BUILT_AT=unknown
 ENV GIT_SHA=$GIT_SHA
 ENV BUILT_AT=$BUILT_AT
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Fixed UID so the Kubernetes securityContext can assert runAsUser without
+# depending on whatever id adduser happens to allocate.
+RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json server.js ./
 USER appuser

@@ -1,0 +1,48 @@
+# kube-prometheus-stack, trimmed to fit alongside real workloads on a single
+# free-tier node. The full default install reserves more memory than the node
+# has left once ArgoCD and a handful of preview environments are running.
+
+grafana:
+  adminPassword: admin
+  defaultDashboardsEnabled: false
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+prometheus:
+  prometheusSpec:
+    # Preview environments are short-lived; a long retention window would store
+    # mostly series for namespaces that no longer exist.
+    retention: 3d
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+alertmanager:
+  enabled: false
+
+# The control plane components below are not individually scrapeable on k3s,
+# and leaving them on produces permanently firing "target down" noise.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false

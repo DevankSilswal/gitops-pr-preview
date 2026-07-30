@@ -1,0 +1,93 @@
+# Grafana picks this up automatically: the sidecar in kube-prometheus-stack
+# watches for ConfigMaps carrying the grafana_dashboard label.
+#
+# The interesting question for this platform is not "is the app up" but "what is
+# the fleet of ephemeral environments costing right now", so every panel is
+# grouped by namespace, which is one namespace per open pull request.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: preview-environments-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  preview-environments.json: |
+    {
+      "title": "Preview Environments",
+      "uid": "preview-envs",
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": { "from": "now-3h", "to": "now" },
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Active preview environments",
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "count(count by (namespace) (kube_pod_info{namespace=~\"pr-.*\"}))",
+              "legendFormat": "environments"
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Total pods across previews",
+          "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+          "targets": [
+            {
+              "expr": "count(kube_pod_info{namespace=~\"pr-.*\"})",
+              "legendFormat": "pods"
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Not ready",
+          "description": "Environments stuck pulling an image or failing probes",
+          "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "expr": "count(kube_pod_status_ready{namespace=~\"pr-.*\",condition=\"true\"} == 0) or vector(0)",
+              "legendFormat": "not ready"
+            }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Restarts (1h)",
+          "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=~\"pr-.*\"}[1h])) or vector(0)",
+              "legendFormat": "restarts"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "CPU by environment",
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum by (namespace) (rate(container_cpu_usage_seconds_total{namespace=~\"pr-.*\",container!=\"\"}[5m]))",
+              "legendFormat": "{{namespace}}"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Memory by environment",
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 5 },
+          "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum by (namespace) (container_memory_working_set_bytes{namespace=~\"pr-.*\",container!=\"\"})",
+              "legendFormat": "{{namespace}}"
+            }
+          ]
+        }
+      ]
+    }

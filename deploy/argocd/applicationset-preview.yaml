@@ -19,6 +19,13 @@ spec:
         github:
           owner: __OWNER__
           repo: gitops-pr-preview
+          # Only PRs carrying this label get an environment. CI adds it when a
+          # PR opens and a scheduled job removes it once the PR goes stale, so
+          # expiry happens declaratively — the label is the desired state and
+          # ArgoCD simply stops generating the Application. No reaper process
+          # racing the controller to delete namespaces it keeps recreating.
+          labels:
+            - preview
           tokenRef:
             secretName: github-token
             key: token
@@ -55,7 +62,10 @@ spec:
             - name: gitSha
               value: "{{head_sha}}"
             - name: ingress.host
-              value: "pr-{{number}}.__NODE_IP__.nip.io"
+              value: "pr-{{number}}.__PREVIEW_BASE_HOST__"
+            # Makes the namespace part of the release so pruning removes it.
+            - name: namespace.create
+              value: "true"
       destination:
         server: https://kubernetes.default.svc
         namespace: "pr-{{number}}"
@@ -63,8 +73,9 @@ spec:
         automated:
           prune: true
           selfHeal: true
-        syncOptions:
-          - CreateNamespace=true
+        # Deliberately no CreateNamespace=true: the chart owns the namespace so
+        # that pruning can remove it. See charts/preview-app/templates/namespace.yaml.
+        syncOptions: []
         retry:
           # CI needs a minute or two to publish the image; until it exists the
           # sync fails with ImagePullBackOff. Back off and retry instead of
