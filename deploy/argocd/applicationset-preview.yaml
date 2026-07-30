@@ -40,7 +40,7 @@ spec:
         # preview environment would keep running after the PR is closed.
         - resources-finalizer.argocd.argoproj.io
     spec:
-      project: default
+      project: previews
       source:
         repoURL: https://github.com/__OWNER__/gitops-pr-preview.git
         # Deploy the chart as it exists on the PR itself, so a PR can change

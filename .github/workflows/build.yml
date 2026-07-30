@@ -13,13 +13,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # On pull_request GitHub checks out a synthetic merge commit whose SHA
           # nothing else knows about. ArgoCD deploys the PR *head*, so build and
           # test that same commit or the image tag will never be found.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
           cache: npm
@@ -35,11 +35,11 @@ jobs:
   manifests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Lint the chart in both TLS modes
         run: |
@@ -67,7 +67,7 @@ jobs:
           # namespace per pull request.
           grep -q 'kind: Namespace' /tmp/rendered.yaml
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
       - name: Validate the Terraform
         run: terraform init -backend=false -input=false && terraform validate
         working-directory: infra
@@ -81,7 +81,7 @@ jobs:
       packages: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -107,17 +107,17 @@ jobs:
 
       # The cluster runs on Oracle's free Ampere A1 nodes, which are arm64.
       # An amd64-only image would CrashLoopBackOff there.
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: app
           platforms: linux/arm64
@@ -129,6 +129,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Scanning after the push rather than before is deliberate: the artefact
+      # that gets scanned is then byte-for-byte the one a preview environment
+      # will run, not a separately built copy of it.
+      - name: Scan the published image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+
       - name: Summary
         run: |
           echo "Image: \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
@@ -137,7 +149,7 @@ jobs:
       # adding a new one per push, so a long-lived PR stays readable.
       - name: Post the preview URL on the pull request
         if: github.event_name == 'pull_request' && vars.PREVIEW_BASE_HOST != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           PREVIEW_URL: "http://pr-${{ github.event.number }}.${{ vars.PREVIEW_BASE_HOST }}"
           IMAGE: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"

@@ -1,0 +1,41 @@
+# Pinning actions to commit SHAs stops a compromised release from reaching this
+# repository, but it also freezes security fixes. Dependabot is the other half
+# of that trade: it moves the pins forward and keeps the trailing version
+# comment accurate, so the pins stay current without becoming mutable again.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+
+  - package-ecosystem: docker
+    directory: /app
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+
+  - package-ecosystem: terraform
+    directory: /infra
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore

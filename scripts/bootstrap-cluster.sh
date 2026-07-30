@@ -141,7 +141,22 @@ fi
 
 # The manifests are committed with placeholders so the repo carries no
 # account-specific values; they are substituted at apply time.
+render() {
+  sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
+      -e "s|__OWNER__|$OWNER|g" \
+      -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
+      -e "s|__TLS_ENABLED__|$TLS_ENABLED|g" \
+      -e "s|__TLS_ISSUER__|$TLS_ISSUER|g" \
+      -e "s|__PROD_IMAGE_TAG__|latest|g" \
+      "$1"
+}
+
+# The project must exist before anything references it, and glob order would
+# otherwise apply it last.
+render "$REPO_ROOT/deploy/argocd/appproject-previews.yaml" | kubectl apply -f -
+
 for manifest in "$REPO_ROOT"/deploy/argocd/*.yaml; do
+  [[ "$manifest" == *appproject-previews.yaml ]] && continue
   sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
       -e "s|__OWNER__|$OWNER|g" \
       -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
