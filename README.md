@@ -37,6 +37,15 @@ An environment exists exactly while its pull request carries the `preview` label
 
 That matters because the obvious alternative, a cron job that deletes stale namespaces, fights the controller: the ApplicationSet would notice the Application missing and immediately recreate it. Expressing expiry as a change in desired state means the two cooperate instead. Re-adding the label brings the environment back.
 
+### Preview environments are hostile by default
+
+A preview environment runs unreviewed code, and the chart it deploys is read from the pull request's own branch. Treating that as trusted is the mistake this design is built around avoiding.
+
+- **ArgoCD's `default` project is not used.** It permits every repository, namespace and resource kind, which means a pull request could add a ClusterRoleBinding to the chart and have ArgoCD apply it with its own privileges — opening a pull request would mean owning the cluster. Previews run under a project scoped to this repository, `pr-*` namespaces, and a resource list containing nothing that grants permissions.
+- **Environments cannot reach each other.** A NetworkPolicy admits only the ingress controller and permits egress to DNS and the public internet with the private ranges carved out, including the link-local metadata service that hands instance credentials to anything that asks.
+- **One environment cannot starve the rest.** A ResourceQuota caps each namespace and a LimitRange supplies defaults, so a pull request that leaks memory or asks for ten replicas is refused rather than allowed to take the node down.
+- **The container holds nothing it does not need.** It runs as a fixed non-root UID on a read-only root filesystem with all capabilities dropped, and npm is deleted from the runtime image — nothing there invokes it, and its bundled dependencies were the source of every CRITICAL the image scan reported.
+
 ## Components
 
 | Piece | Choice | Reason |
@@ -98,7 +107,11 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | TTL sweep expires an idle environment | Label removed, PR commented, environment gone without anything deleting it directly |
 | TLS is issued per environment | `pr-1.…nip.io` served a certificate with a matching SAN; an unknown host still gets ingress-nginx's fallback |
 | The Grafana dashboard is real | Loaded from its ConfigMap, and all six panel queries returned data from the live environment |
-| Re-running the bootstrap is safe | A second and third run changed nothing and broke nothing |
+| Re-running the bootstrap is safe | A second, third and fourth run changed nothing and broke nothing |
+| Environments are network-isolated | A pod in another namespace timed out reaching the preview's service, while the ingress path still returned 200 |
+| Cloud metadata is unreachable | A request to `169.254.169.254` from inside a preview pod timed out |
+| Quotas are enforced, not decorative | `ResourceQuota` reported live usage: `pods: 1/4`, `requests.cpu: 25m/500m` |
+| Images carry no fixable HIGH/CRITICAL | Trivy gates the build; the CRITICAL it originally found is gone |
 
 Four bugs were found only by running this, and are fixed:
 
