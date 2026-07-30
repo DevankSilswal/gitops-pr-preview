@@ -2,8 +2,10 @@ SHELL := /usr/bin/env bash
 CHART := charts/preview-app
 DEMO_HOST ?= pr-1.127.0.0.1.nip.io
 
+KIND_CLUSTER := gitops-preview
+
 .DEFAULT_GOAL := help
-.PHONY: help test lint render validate tf-validate bootstrap clean
+.PHONY: help test lint render validate tf-validate bootstrap dev-cluster dev-bootstrap dev-down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -32,6 +34,17 @@ bootstrap: ## Install the platform onto the cluster in the current kube context
 	@test -n "$(OWNER)" || { echo "usage: make bootstrap OWNER=<github-owner> NODE_IP=<ip>"; exit 1; }
 	@test -n "$(NODE_IP)" || { echo "usage: make bootstrap OWNER=<github-owner> NODE_IP=<ip>"; exit 1; }
 	./scripts/bootstrap-cluster.sh $(OWNER) $(NODE_IP)
+
+dev-cluster: ## Create a local kind cluster with ports 80 and 443 mapped
+	kind create cluster --name $(KIND_CLUSTER) --config scripts/kind-cluster.yaml
+
+dev-bootstrap: ## Install the platform onto the local kind cluster
+	@test -n "$(OWNER)" || { echo "usage: make dev-bootstrap OWNER=<github-owner>"; exit 1; }
+	DEV_CLUSTER=1 GITHUB_TOKEN="$$(gh auth token)" \
+		./scripts/bootstrap-cluster.sh $(OWNER) 127.0.0.1
+
+dev-down: ## Delete the local kind cluster
+	kind delete cluster --name $(KIND_CLUSTER)
 
 clean: ## Remove local build artefacts
 	rm -rf app/node_modules infra/.terraform

@@ -40,9 +40,25 @@ helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
 helm repo update >/dev/null
 
+if [[ -n "${DEV_CLUSTER:-}" ]]; then
+  # kind has no load balancer implementation, so the controller binds the
+  # node's ports directly. scripts/kind-cluster.yaml maps those to the host,
+  # which makes nip.io hostnames resolve exactly as they do in production.
+  INGRESS_ARGS=(
+    --set controller.hostPort.enabled=true
+    --set controller.service.type=NodePort
+    --set controller.nodeSelector."ingress-ready"=true
+    --set-string controller.tolerations[0].key=node-role.kubernetes.io/control-plane
+    --set controller.tolerations[0].operator=Exists
+    --set controller.tolerations[0].effect=NoSchedule
+  )
+else
+  INGRESS_ARGS=(--set controller.service.type=LoadBalancer)
+fi
+
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx --create-namespace \
-  --set controller.service.type=LoadBalancer \
+  "${INGRESS_ARGS[@]}" \
   --set controller.ingressClassResource.default=true \
   --wait --timeout 10m
 
