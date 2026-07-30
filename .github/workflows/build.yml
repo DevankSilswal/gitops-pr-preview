@@ -134,6 +134,12 @@ jobs:
       # will run, not a separately built copy of it.
       - name: Scan the published image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # The runner is amd64 and Trivy resolves that platform out of the
+          # image index by default, but this image is published for arm64 only
+          # to match the cluster nodes. Without this it reports the image as
+          # missing rather than scanning it.
+          TRIVY_PLATFORM: linux/arm64
         with:
           image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
           severity: HIGH,CRITICAL
