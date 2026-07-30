@@ -13,6 +13,23 @@ ARG BUILT_AT=unknown
 ENV GIT_SHA=$GIT_SHA
 ENV BUILT_AT=$BUILT_AT
 
+# Pick up OS package fixes published since the base image was tagged. This
+# trades byte-for-byte reproducibility for patched libraries, which is the
+# right way round when the alternative is shipping a known-vulnerable OpenSSL.
+RUN apk upgrade --no-cache
+
+# The runtime only ever executes `node server.js`; npm is needed to install
+# dependencies, which happens in the deps stage above and is discarded. Its
+# large bundled dependency tree was the source of every CRITICAL the image
+# scan reported, none of it in code that ever runs.
+#
+# This does not shrink the image — the files stay in the base layer — but they
+# are gone from the final filesystem, so neither the scanner nor anyone who
+# gets a shell in a preview environment can reach them.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+           /usr/local/bin/npm \
+           /usr/local/bin/npx
+
 # Fixed UID so the Kubernetes securityContext can assert runAsUser without
 # depending on whatever id adduser happens to allocate.
 RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
