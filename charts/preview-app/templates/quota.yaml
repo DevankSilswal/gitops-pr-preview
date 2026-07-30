@@ -1,0 +1,35 @@
+{{- if .Values.quota.enabled -}}
+# A ceiling per preview environment.
+#
+# Every environment shares one node. Without a quota, a pull request that
+# introduces a memory leak — or simply asks for ten replicas — starves every
+# other environment and the platform components alongside them. One person's
+# unmerged branch should not be able to take down everybody's previews.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "preview-app.fullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- toYaml .Values.quota.hard | nindent 4 }}
+---
+# The quota above only counts declared requests, so a pod with none would slip
+# past it entirely. This supplies defaults and refuses anything oversized.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "preview-app.fullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        {{- toYaml .Values.quota.defaultLimits | nindent 8 }}
+      defaultRequest:
+        {{- toYaml .Values.quota.defaultRequests | nindent 8 }}
+      max:
+        {{- toYaml .Values.quota.maxPerContainer | nindent 8 }}
+{{- end }}

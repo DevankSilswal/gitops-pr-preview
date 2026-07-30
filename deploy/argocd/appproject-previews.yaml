@@ -1,0 +1,64 @@
+# The blast radius of a preview environment.
+#
+# This exists because of an escalation path that is easy to miss: the chart a
+# preview environment deploys is read from the pull request's own branch. Under
+# ArgoCD's `default` project — which permits every repository, every namespace
+# and every resource kind — anyone able to open a pull request could add a
+# ClusterRoleBinding to charts/preview-app/templates/ and have ArgoCD apply it
+# with its own privileges. Opening a pull request would mean owning the cluster.
+#
+# So previews get their own project, and it is deliberately narrow: this
+# repository only, `pr-*` namespaces only, and a resource list containing
+# nothing that grants permissions. Anything else a pull request adds to the
+# chart is refused by ArgoCD rather than applied.
+#
+# __OWNER__ is substituted by scripts/bootstrap-cluster.sh.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: previews
+  namespace: argocd
+spec:
+  description: Ephemeral per-pull-request environments
+
+  sourceRepos:
+    - https://github.com/__OWNER__/gitops-pr-preview.git
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: 'pr-*'
+
+  # Namespace is the only cluster-scoped object a preview may create. Without
+  # this line the chart could create ClusterRoles, CRDs or webhooks.
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+
+  namespaceResourceWhitelist:
+    - group: ''
+      kind: Service
+    - group: ''
+      kind: ConfigMap
+    - group: apps
+      kind: Deployment
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+    - group: cert-manager.io
+      kind: Certificate
+
+  # Nothing here should ever create identities or grant permissions.
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ServiceAccount
+    - group: ''
+      kind: Secret
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding

@@ -34,6 +34,30 @@ ingress:
     enabled: false
     clusterIssuer: letsencrypt-staging
 
+networkPolicy:
+  enabled: true
+  # Namespace the ingress controller runs in; the only source allowed to reach
+  # a preview environment.
+  ingressNamespace: ingress-nginx
+
+quota:
+  enabled: true
+  hard:
+    pods: "4"
+    requests.cpu: "500m"
+    requests.memory: 512Mi
+    limits.cpu: "2"
+    limits.memory: 1Gi
+  defaultRequests:
+    cpu: 25m
+    memory: 48Mi
+  defaultLimits:
+    cpu: 200m
+    memory: 128Mi
+  maxPerContainer:
+    cpu: "1"
+    memory: 512Mi
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001

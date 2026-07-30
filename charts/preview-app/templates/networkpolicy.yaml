@@ -1,0 +1,59 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Isolation between preview environments.
+#
+# Every environment runs unreviewed code from a different branch, and they all
+# share one cluster. Without a policy, pr-1 can reach pr-2, the ArgoCD API,
+# Prometheus, the kubelet, and — on a cloud node — the link-local metadata
+# service, which hands out instance credentials to anything that asks. A single
+# SSRF in a pull request would be enough.
+#
+# So: nothing may talk to this environment except the ingress controller, and
+# this environment may talk to DNS and the public internet, but not to anything
+# inside the cluster or on the node's private networks.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "preview-app.fullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "preview-app.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Only the ingress controller. Not other preview environments.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace }}
+      ports:
+        - port: http
+          protocol: TCP
+
+  egress:
+    # DNS, or nothing resolves.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # The public internet, with every private range carved out. 169.254.0.0/16
+    # is the important one: it carries the cloud metadata service.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+{{- end }}
