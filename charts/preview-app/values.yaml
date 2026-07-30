@@ -1,3 +1,9 @@
+namespace:
+  # ArgoCD sets this so the namespace becomes a pruneable part of the release.
+  # Left off for plain `helm install`, where the namespace usually already
+  # exists and is not the chart's to own.
+  create: false
+
 replicaCount: 1
 
 image:

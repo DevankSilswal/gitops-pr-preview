@@ -63,6 +63,9 @@ spec:
               value: "{{head_sha}}"
             - name: ingress.host
               value: "pr-{{number}}.__PREVIEW_BASE_HOST__"
+            # Makes the namespace part of the release so pruning removes it.
+            - name: namespace.create
+              value: "true"
       destination:
         server: https://kubernetes.default.svc
         namespace: "pr-{{number}}"
@@ -70,8 +73,9 @@ spec:
         automated:
           prune: true
           selfHeal: true
-        syncOptions:
-          - CreateNamespace=true
+        # Deliberately no CreateNamespace=true: the chart owns the namespace so
+        # that pruning can remove it. See charts/preview-app/templates/namespace.yaml.
+        syncOptions: []
         retry:
           # CI needs a minute or two to publish the image; until it exists the
           # sync fails with ImagePullBackOff. Back off and retry instead of
