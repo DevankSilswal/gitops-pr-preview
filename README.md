@@ -94,6 +94,11 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | Container runs unprivileged | `id` inside the pod: `uid=10001(appuser)`, read-only root filesystem |
 | Removing the label tears it down | Application, namespace and URL all gone; the URL returns 404 |
 | Nothing leaks | Zero `pr-*` namespaces remain afterwards |
+| CI comments the preview URL | Posted once, then edited in place on the next push rather than duplicated |
+| TTL sweep expires an idle environment | Label removed, PR commented, environment gone without anything deleting it directly |
+| TLS is issued per environment | `pr-1.…nip.io` served a certificate with a matching SAN; an unknown host still gets ingress-nginx's fallback |
+| The Grafana dashboard is real | Loaded from its ConfigMap, and all six panel queries returned data from the live environment |
+| Re-running the bootstrap is safe | A second and third run changed nothing and broke nothing |
 
 Four bugs were found only by running this, and are fixed:
 
@@ -102,7 +107,10 @@ Four bugs were found only by running this, and are fixed:
 3. nip.io reads `pr-1.127.0.0.1` as the address `1.127.0.0`, so every preview URL resolved somewhere else and timed out.
 4. Namespaces survived pruning, because `CreateNamespace=true` creates them outside the set ArgoCD tracks.
 
-The only untested difference on Oracle Cloud is the ingress service type, since a local cluster has no load balancer.
+Two things genuinely remain unproven, and both need a publicly reachable address:
+
+- **ACME issuance.** Let's Encrypt validates over HTTP-01 by connecting back to the hostname it is certifying, which cannot work against `127.0.0.1`. Everything downstream of the issuer is verified with a self-signed one; only the ACME exchange itself is not.
+- **The ingress service type.** A local cluster has no load balancer, so the controller binds host ports instead.
 
 ## Try it locally
 
