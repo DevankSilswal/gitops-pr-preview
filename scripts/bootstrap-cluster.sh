@@ -64,18 +64,27 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --set controller.ingressClassResource.default=true \
   --wait --timeout 10m
 
-if [[ -n "${ACME_EMAIL:-}" ]]; then
+if [[ -n "${ACME_EMAIL:-}" || -n "${WITH_TLS:-}" ]]; then
   echo "==> Installing cert-manager"
   helm upgrade --install cert-manager jetstack/cert-manager \
     --namespace cert-manager --create-namespace \
     --set crds.enabled=true \
     --wait --timeout 10m
 
-  echo "==> Creating Let's Encrypt issuers"
-  sed "s|__ACME_EMAIL__|$ACME_EMAIL|g" \
-    "$REPO_ROOT/deploy/platform/cluster-issuers.yaml" | kubectl apply -f -
+  # Needs no account, so it is always available — including on clusters the
+  # ACME servers cannot reach.
+  echo "==> Creating the self-signed issuer"
+  kubectl apply -f "$REPO_ROOT/deploy/platform/issuer-selfsigned.yaml"
+
+  if [[ -n "${ACME_EMAIL:-}" ]]; then
+    echo "==> Creating Let's Encrypt issuers"
+    sed "s|__ACME_EMAIL__|$ACME_EMAIL|g" \
+      "$REPO_ROOT/deploy/platform/cluster-issuers.yaml" | kubectl apply -f -
+  else
+    echo "==> Skipping Let's Encrypt issuers (set ACME_EMAIL to create them)"
+  fi
 else
-  echo "==> Skipping cert-manager (set ACME_EMAIL to enable TLS)"
+  echo "==> Skipping cert-manager (set ACME_EMAIL, or WITH_TLS for self-signed)"
 fi
 
 if [[ -n "${WITH_OBSERVABILITY:-}" ]]; then
@@ -118,12 +127,26 @@ OWNER_LC=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
 # ambiguity and keeps the readable pr-<number> prefix.
 PREVIEW_BASE_HOST="$(echo "$NODE_IP" | tr '.' '-').nip.io"
 
+# Preview environments get certificates only if an issuer exists to sign them.
+if [[ -n "${ACME_EMAIL:-}" ]]; then
+  TLS_ENABLED=true
+  TLS_ISSUER=letsencrypt-staging
+elif [[ -n "${WITH_TLS:-}" ]]; then
+  TLS_ENABLED=true
+  TLS_ISSUER=selfsigned
+else
+  TLS_ENABLED=false
+  TLS_ISSUER=selfsigned
+fi
+
 # The manifests are committed with placeholders so the repo carries no
 # account-specific values; they are substituted at apply time.
 for manifest in "$REPO_ROOT"/deploy/argocd/*.yaml; do
   sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
       -e "s|__OWNER__|$OWNER|g" \
       -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
+      -e "s|__TLS_ENABLED__|$TLS_ENABLED|g" \
+      -e "s|__TLS_ISSUER__|$TLS_ISSUER|g" \
       -e "s|__PROD_IMAGE_TAG__|latest|g" \
       "$manifest" | kubectl apply -f -
 done

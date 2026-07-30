@@ -66,6 +66,10 @@ spec:
             # Makes the namespace part of the release so pruning removes it.
             - name: namespace.create
               value: "true"
+            - name: ingress.tls.enabled
+              value: "__TLS_ENABLED__"
+            - name: ingress.tls.clusterIssuer
+              value: "__TLS_ISSUER__"
       destination:
         server: https://kubernetes.default.svc
         namespace: "pr-{{number}}"

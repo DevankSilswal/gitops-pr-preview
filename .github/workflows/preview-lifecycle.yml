@@ -14,6 +14,11 @@ on:
     # Hourly sweep for environments whose PR has gone quiet.
     - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      ttl_days:
+        description: 'Override the TTL for this run. 0 expires every idle environment immediately.'
+        required: false
+        default: ''
 
 permissions:
   pull-requests: write
@@ -42,9 +47,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
+        env:
+          TTL_OVERRIDE: ${{ inputs.ttl_days }}
         with:
           script: |
-            const ttlDays = Number(process.env.TTL_DAYS);
+            // The override exists so the sweep can be exercised on demand
+            // rather than only being observed days later on the schedule.
+            const ttlDays = Number(process.env.TTL_OVERRIDE || process.env.TTL_DAYS);
+            if (!Number.isFinite(ttlDays) || ttlDays < 0) {
+              core.setFailed(`invalid ttl_days: ${process.env.TTL_OVERRIDE}`);
+              return;
+            }
+            core.info(`expiring preview environments idle for more than ${ttlDays} day(s)`);
             const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
 
             const prs = await github.paginate(github.rest.pulls.list, {
