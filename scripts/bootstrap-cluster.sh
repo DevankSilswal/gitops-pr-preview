@@ -47,10 +47,12 @@ if [[ -n "${DEV_CLUSTER:-}" ]]; then
   INGRESS_ARGS=(
     --set controller.hostPort.enabled=true
     --set controller.service.type=NodePort
-    --set controller.nodeSelector."ingress-ready"=true
+    # nodeSelector values are strings in the Kubernetes API. Plain --set sends
+    # a bare true, which the API server rejects as a type error.
+    --set-string controller.nodeSelector."ingress-ready"=true
     --set-string controller.tolerations[0].key=node-role.kubernetes.io/control-plane
-    --set controller.tolerations[0].operator=Exists
-    --set controller.tolerations[0].effect=NoSchedule
+    --set-string controller.tolerations[0].operator=Exists
+    --set-string controller.tolerations[0].effect=NoSchedule
   )
 else
   INGRESS_ARGS=(--set controller.service.type=LoadBalancer)
@@ -89,7 +91,12 @@ fi
 
 echo "==> Installing ArgoCD"
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+# Server-side apply is required, not a preference: ArgoCD's CRDs are larger
+# than the 262144-byte ceiling on the last-applied-configuration annotation
+# that client-side apply writes, so a plain `kubectl apply` fails outright on
+# applicationsets.argoproj.io.
+kubectl apply -n argocd --server-side --force-conflicts \
+  -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 echo "==> Waiting for ArgoCD to come up"
 kubectl wait --for=condition=available --timeout=10m \
@@ -105,12 +112,18 @@ echo "==> Applying ArgoCD manifests for owner=$OWNER node=$NODE_IP"
 # GHCR paths must be lowercase even when the GitHub username is not.
 OWNER_LC=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
 
+# nip.io splits on dashes as well as dots when it looks for an address, so a
+# dotted IP after a label like `pr-1` is misread: pr-1.127.0.0.1.nip.io
+# resolves to 1.127.0.0. Writing the address in dash form removes the
+# ambiguity and keeps the readable pr-<number> prefix.
+PREVIEW_BASE_HOST="$(echo "$NODE_IP" | tr '.' '-').nip.io"
+
 # The manifests are committed with placeholders so the repo carries no
 # account-specific values; they are substituted at apply time.
 for manifest in "$REPO_ROOT"/deploy/argocd/*.yaml; do
   sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
       -e "s|__OWNER__|$OWNER|g" \
-      -e "s|__NODE_IP__|$NODE_IP|g" \
+      -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
       -e "s|__PROD_IMAGE_TAG__|latest|g" \
       "$manifest" | kubectl apply -f -
 done
@@ -120,11 +133,11 @@ cat <<EOF
 Done.
   ArgoCD UI:       kubectl port-forward svc/argocd-server -n argocd 8080:443
   Admin password:  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
-  Preview URLs:    http://pr-<number>.$NODE_IP.nip.io
+  Preview URLs:    http://pr-<number>.$PREVIEW_BASE_HOST
 
-Set PREVIEW_BASE_HOST to '$NODE_IP.nip.io' in the repository variables so CI can
-post preview links on pull requests:
-  gh variable set PREVIEW_BASE_HOST --body '$NODE_IP.nip.io'
+Set PREVIEW_BASE_HOST to '$PREVIEW_BASE_HOST' in the repository variables so CI
+can post preview links on pull requests:
+  gh variable set PREVIEW_BASE_HOST --body '$PREVIEW_BASE_HOST'
 
 Label a pull request 'preview' to create your first environment.
 EOF
