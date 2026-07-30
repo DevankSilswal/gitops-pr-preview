@@ -28,6 +28,21 @@ ingress:
     enabled: false
     clusterIssuer: letsencrypt-staging
 
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
 # Kept small on purpose: a single free-tier node has to hold many
 # concurrent preview environments.
 resources:
