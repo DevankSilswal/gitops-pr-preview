@@ -8,8 +8,18 @@ metadata:
   name: {{ include "preview-app.fullname" . }}
   labels:
     {{- include "preview-app.labels" . | nindent 4 }}
+  {{- if .Values.ingress.tls.enabled }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+  {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ include "preview-app.fullname" . }}-tls
+  {{- end }}
   rules:
     - host: {{ .Values.ingress.host | quote }}
       http:

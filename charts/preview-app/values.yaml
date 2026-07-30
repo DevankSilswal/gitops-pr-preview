@@ -21,6 +21,12 @@ ingress:
   className: nginx
   # Set per environment, e.g. pr-42.<node-ip>.nip.io
   host: ""
+  tls:
+    # Off by default so a cluster without cert-manager still works. Let's
+    # Encrypt also rate-limits heavily, and preview environments churn through
+    # hostnames faster than almost any other workload.
+    enabled: false
+    clusterIssuer: letsencrypt-staging
 
 # Kept small on purpose: a single free-tier node has to hold many
 # concurrent preview environments.
