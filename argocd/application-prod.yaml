@@ -1,0 +1,42 @@
+# The long-lived environment tracking the main branch.
+#
+# Same chart, same mechanism as a preview environment — the only difference is
+# that this one follows a branch instead of a pull request. That symmetry is the
+# point: merging a PR promotes the exact artifact that was reviewed.
+#
+# __OWNER__ and __NODE_IP__ are substituted by scripts/bootstrap-cluster.sh.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: preview-app-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/__OWNER__/gitops-pr-preview.git
+    targetRevision: main
+    path: charts/preview-app
+    helm:
+      parameters:
+        - name: image.repository
+          value: ghcr.io/__OWNER_LC__/preview-app
+        # Updated by CI on every merge to main.
+        - name: image.tag
+          value: __PROD_IMAGE_TAG__
+        - name: environment
+          value: production
+        - name: prNumber
+          value: "none"
+        - name: ingress.host
+          value: "app.__NODE_IP__.nip.io"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

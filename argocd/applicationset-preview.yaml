@@ -1,0 +1,76 @@
+# One preview environment per open pull request.
+#
+# The pullRequest generator polls the GitHub API and produces one set of
+# parameters per open PR. The template below turns each of those into an ArgoCD
+# Application, which owns its own namespace, Deployment, Service and Ingress.
+# When the PR is closed the generator stops emitting it, the ApplicationSet
+# controller deletes the Application, and the finalizer cascades that deletion
+# to every resource it created. Nothing tears environments down imperatively.
+#
+# __OWNER__ and __NODE_IP__ are substituted by scripts/bootstrap-cluster.sh.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: preview-environments
+  namespace: argocd
+spec:
+  generators:
+    - pullRequest:
+        github:
+          owner: __OWNER__
+          repo: gitops-pr-preview
+          tokenRef:
+            secretName: github-token
+            key: token
+        # How quickly a newly opened PR gets an environment.
+        requeueAfterSeconds: 60
+
+  template:
+    metadata:
+      name: "preview-pr-{{number}}"
+      finalizers:
+        # Without this, deleting the Application orphans its resources and the
+        # preview environment would keep running after the PR is closed.
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/__OWNER__/gitops-pr-preview.git
+        # Deploy the chart as it exists on the PR itself, so a PR can change
+        # its own deployment config and see the result.
+        targetRevision: "{{head_sha}}"
+        path: charts/preview-app
+        helm:
+          parameters:
+            # Lowercase: container registries reject uppercase image names.
+            - name: image.repository
+              value: ghcr.io/__OWNER_LC__/preview-app
+            # Must match the tag built by .github/workflows/build.yml exactly.
+            - name: image.tag
+              value: "pr-{{number}}-{{head_sha}}"
+            - name: environment
+              value: "pr-{{number}}"
+            - name: prNumber
+              value: "{{number}}"
+            - name: gitSha
+              value: "{{head_sha}}"
+            - name: ingress.host
+              value: "pr-{{number}}.__NODE_IP__.nip.io"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "pr-{{number}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          # CI needs a minute or two to publish the image; until it exists the
+          # sync fails with ImagePullBackOff. Back off and retry instead of
+          # leaving the environment broken.
+          limit: 10
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

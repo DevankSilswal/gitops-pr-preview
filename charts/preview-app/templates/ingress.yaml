@@ -1,0 +1,24 @@
+{{- if .Values.ingress.enabled -}}
+{{- if not .Values.ingress.host -}}
+{{- fail "ingress.host is required when ingress.enabled is true (e.g. pr-42.<node-ip>.nip.io)" -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "preview-app.fullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "preview-app.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

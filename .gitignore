@@ -1,0 +1,17 @@
+node_modules/
+npm-debug.log
+.DS_Store
+
+# Terraform state holds resource details in plaintext, and tfvars points at
+# your OCI API key. Neither belongs in a public repo.
+# .terraform.lock.hcl is deliberately NOT ignored — it pins provider versions.
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.tfplan
+
+# Credentials
+*.pem
+*.key
+kubeconfig
