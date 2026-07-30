@@ -28,7 +28,7 @@ app.get('/', (req, res) => {
 <html>
   <head><title>Preview Environment</title></head>
   <body style="font-family: sans-serif; padding: 2rem;">
-    <h1>Preview Environment</h1>
+    <h1>Preview Environment &mdash; ${escapeHtml(info.environment)}</h1>
     <ul>
       <li><strong>Environment:</strong> ${escapeHtml(info.environment)}</li>
       <li><strong>PR Number:</strong> ${escapeHtml(info.prNumber)}</li>
