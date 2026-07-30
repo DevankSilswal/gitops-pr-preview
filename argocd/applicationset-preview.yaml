@@ -19,6 +19,13 @@ spec:
         github:
           owner: __OWNER__
           repo: gitops-pr-preview
+          # Only PRs carrying this label get an environment. CI adds it when a
+          # PR opens and a scheduled job removes it once the PR goes stale, so
+          # expiry happens declaratively — the label is the desired state and
+          # ArgoCD simply stops generating the Application. No reaper process
+          # racing the controller to delete namespaces it keeps recreating.
+          labels:
+            - preview
           tokenRef:
             secretName: github-token
             key: token

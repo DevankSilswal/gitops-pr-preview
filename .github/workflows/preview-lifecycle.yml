@@ -1,0 +1,84 @@
+name: preview-lifecycle
+
+# Controls which pull requests are entitled to a preview environment.
+#
+# The ApplicationSet only generates Applications for PRs labelled `preview`, so
+# adding and removing that label is the entire lifecycle API. Expiry is
+# therefore declarative: nothing here deletes a namespace: removing the label
+# changes desired state and ArgoCD prunes the environment on its own.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+  schedule:
+    # Hourly sweep for environments whose PR has gone quiet.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+
+env:
+  # A preview environment expires after this many days without a push.
+  TTL_DAYS: 3
+
+jobs:
+  grant:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ['preview'],
+            });
+
+  expire:
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const ttlDays = Number(process.env.TTL_DAYS);
+            const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            for (const pr of prs) {
+              const labelled = pr.labels.some((l) => l.name === 'preview');
+              if (!labelled) continue;
+
+              // updated_at moves on pushes, comments and reviews, so an active
+              // review keeps its environment alive without any manual renewal.
+              if (new Date(pr.updated_at).getTime() >= cutoff) continue;
+
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                name: 'preview',
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: [
+                  `Preview environment expired after ${ttlDays} days without activity.`,
+                  '',
+                  'Add the `preview` label to bring it back.',
+                ].join('\n'),
+              });
+
+              core.info(`expired preview for PR #${pr.number}`);
+            }
