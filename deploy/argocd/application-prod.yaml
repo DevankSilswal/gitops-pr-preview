@@ -1,10 +1,17 @@
 # The long-lived environment tracking the main branch.
 #
-# Same chart, same mechanism as a preview environment — the only difference is
-# that this one follows a branch instead of a pull request. That symmetry is the
-# point: merging a PR promotes the exact artifact that was reviewed.
+# Same chart and same mechanism as a preview environment; this one follows a
+# branch instead of a pull request. That symmetry is the point — merging a pull
+# request promotes the artefact that was actually reviewed.
 #
-# __OWNER__ and __NODE_IP__ are substituted by scripts/bootstrap-cluster.sh.
+# The deployed image tag lives in charts/preview-app/values-production.yaml
+# rather than here, because CI rewrites that file and commits it. Pinning a
+# mutable tag like `latest` in this manifest instead would mean the cluster's
+# state could not be read back out of the repository, and ArgoCD would have no
+# way to tell that a release had happened.
+#
+# __OWNER__ and __PREVIEW_BASE_HOST__ are substituted by
+# scripts/bootstrap-cluster.sh.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -19,18 +26,17 @@ spec:
     targetRevision: main
     path: charts/preview-app
     helm:
+      valueFiles:
+        - values-production.yaml
       parameters:
         - name: image.repository
           value: ghcr.io/__OWNER_LC__/preview-app
-        # Updated by CI on every merge to main.
-        - name: image.tag
-          value: __PROD_IMAGE_TAG__
-        - name: environment
-          value: production
-        - name: prNumber
-          value: "none"
         - name: ingress.host
           value: "app.__PREVIEW_BASE_HOST__"
+        - name: ingress.tls.enabled
+          value: "__TLS_ENABLED__"
+        - name: ingress.tls.clusterIssuer
+          value: "__TLS_ISSUER__"
   destination:
     server: https://kubernetes.default.svc
     namespace: production
@@ -39,4 +45,6 @@ spec:
       prune: true
       selfHeal: true
     syncOptions:
+      # Unlike a preview, this namespace outlives any single release, so it is
+      # not the chart's to own and delete.
       - CreateNamespace=true

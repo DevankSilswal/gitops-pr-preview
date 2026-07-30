@@ -5,6 +5,11 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
+    paths-ignore:
+      # The promote job at the end of this workflow commits this file. Without
+      # the exclusion that commit would trigger another build, which would
+      # commit again, forever.
+      - charts/preview-app/values-production.yaml
 
 env:
   REGISTRY: ghcr.io
@@ -76,6 +81,9 @@ jobs:
     # A failing test or an unrenderable chart must never produce an environment.
     needs: [test, manifests]
     runs-on: ubuntu-latest
+    outputs:
+      # Consumed by promote, which writes it into the production values file.
+      tag: ${{ steps.meta.outputs.tag }}
     permissions:
       contents: read
       packages: write
@@ -187,3 +195,40 @@ jobs:
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
+
+  # Releasing to production is a commit, not a deploy command. CI writes the
+  # tag it just published into the repository; ArgoCD sees the commit and rolls
+  # it out. The pipeline therefore never needs cluster credentials, and the
+  # history of this file is the deployment log.
+  promote:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Record the released image tag
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          VALUES: charts/preview-app/values-production.yaml
+        run: |
+          set -euo pipefail
+          test -n "$TAG"
+
+          current=$(grep -E '^  tag: ' "$VALUES" | awk '{print $2}')
+          if [ "$current" = "$TAG" ]; then
+            echo "production already at $TAG"
+            exit 0
+          fi
+
+          sed -i "s|^  tag: .*|  tag: ${TAG}|" "$VALUES"
+          grep -q "  tag: ${TAG}" "$VALUES"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$VALUES"
+          git commit -m "chore(release): deploy ${TAG} to production"
+          git push
+          echo "promoted $current -> $TAG" >> "$GITHUB_STEP_SUMMARY"
