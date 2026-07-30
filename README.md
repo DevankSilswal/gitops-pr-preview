@@ -20,10 +20,10 @@ ArgoCD ApplicationSet (PR generator)
       +-- detects open PRs, creates one Application per PR
       |
       v
-k3s cluster (Oracle Cloud free tier)
+Kubernetes cluster
       |
       +-- namespace: pr-<number>
-      +-- ingress: pr-<number>.preview.<domain>
+      +-- ingress:   pr-<number>.<node-ip-in-dashes>.nip.io
       |
       v
 Reviewer opens the URL, posted back as a PR comment
@@ -45,8 +45,10 @@ That matters because the obvious alternative, a cron job that deletes stale name
 | GitOps | ArgoCD + ApplicationSet PR generator | The PR generator is what makes per-PR environments declarative rather than scripted |
 | CI | GitHub Actions | Builds and pushes images; never talks to the cluster directly |
 | Registry | GHCR | Free for public images, native GitHub auth |
-| Ingress | ingress-nginx + cert-manager | Wildcard DNS `*.preview.<domain>` with automatic TLS |
-| Observability | Prometheus + Grafana + Loki | Tracks active environments and their resource cost |
+| Ingress | ingress-nginx | Routes every `pr-<n>` hostname to the right namespace by Host header |
+| DNS | nip.io | Wildcard hostnames with no domain to buy or configure |
+| TLS | cert-manager + Let's Encrypt | Optional, staging issuer by default — preview hostnames churn past the production rate limit |
+| Observability | Prometheus + Grafana | Tracks active environments and what they cost |
 
 CI builds artifacts; ArgoCD deploys them. The pipeline holds no cluster credentials — the cluster pulls its own desired state from git. That separation is the point of GitOps.
 
@@ -74,10 +76,47 @@ The application in `app/` is deliberately trivial. It reports its own environmen
 - [x] **Phase 3 — CI.** GitHub Actions runs the tests, then builds and pushes an `arm64` image to GHCR tagged `pr-<number>-<head-sha>`. CI holds no cluster credentials.
 - [x] **Phase 4 — GitOps definitions.** ApplicationSet PR generator and the production Application, both written and YAML-validated.
 - [x] **Phase 5 — Infrastructure as code.** Terraform for the Oracle Cloud VCN and Ampere A1 node, k3s via cloud-init, plus a one-shot cluster bootstrap script. `terraform validate` passes.
-- [x] **Phase 6 — Lifecycle and operations.** Label-driven TTL expiry, preview URL posted as a pull request comment, optional Let's Encrypt TLS, and a Grafana dashboard covering the fleet of environments.
-- [ ] **Phase 7 — First live environment.** Blocked only on the Oracle Cloud instance. Apply the Terraform, run the bootstrap script, label a PR.
+- [x] **Phase 6 — Lifecycle and operations.** Label-driven TTL expiry, preview URL posted as a pull request comment, optional Let's Encrypt TLS, a locked-down pod security context, and a Grafana dashboard covering the fleet.
+- [x] **Phase 7 — Proven end to end** against a live cluster. See below.
+- [ ] **Phase 8 — Oracle Cloud.** The same manifests with a public IP instead of `127.0.0.1`. Blocked only on free-tier ARM capacity.
 
-Everything through Phase 6 is written and validated offline — `helm lint`, rendered manifests, `terraform validate`, and a real pull request whose CI-published image tag matches what the ApplicationSet asks for. What has *not* run yet is ArgoCD reconciling against a live cluster; Phase 7 is what proves that.
+## What has actually been verified
+
+Run against a live Kubernetes cluster, driving a real GitHub pull request, pulling real images from GHCR:
+
+| Behaviour | Result |
+|---|---|
+| ApplicationSet discovers a labelled PR | Application `preview-pr-1` generated within ~60s |
+| ArgoCD syncs the chart | Namespace, Deployment, Service and Ingress created, `Synced/Healthy` |
+| Preview serves the PR's own code | The page showed a heading added *by that PR*, absent from `main` |
+| Build identity is correct | `/api/info` reported PR number 1 and that PR's head SHA |
+| Pushing to the PR updates it | New commit, new image tag, environment reconciled with no manual step |
+| Container runs unprivileged | `id` inside the pod: `uid=10001(appuser)`, read-only root filesystem |
+| Removing the label tears it down | Application, namespace and URL all gone; the URL returns 404 |
+| Nothing leaks | Zero `pr-*` namespaces remain afterwards |
+
+Four bugs were found only by running this, and are fixed:
+
+1. The image tag could never match, because GitHub Actions builds the PR's *merge* commit while ArgoCD asks for its *head*.
+2. `kubectl apply` fails on ArgoCD's CRDs — they exceed the annotation size limit that client-side apply relies on.
+3. nip.io reads `pr-1.127.0.0.1` as the address `1.127.0.0`, so every preview URL resolved somewhere else and timed out.
+4. Namespaces survived pruning, because `CreateNamespace=true` creates them outside the set ArgoCD tracks.
+
+The only untested difference on Oracle Cloud is the ingress service type, since a local cluster has no load balancer.
+
+## Try it locally
+
+No cloud account needed — this is the same path the verification above took.
+
+```bash
+make dev-cluster                      # kind cluster with ports 80/443 mapped
+make dev-bootstrap OWNER=<your-user>  # ingress-nginx, ArgoCD, the ApplicationSet
+gh pr edit <n> --add-label preview    # environment appears within ~60s
+curl http://pr-<n>.127-0-0-1.nip.io/api/info
+make dev-down
+```
+
+`make validate` runs everything checkable without a cluster: tests, chart lint in both TLS modes, and `terraform validate`.
 
 ## Running the sample app locally
 

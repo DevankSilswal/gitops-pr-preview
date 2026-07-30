@@ -29,9 +29,52 @@ jobs:
       - run: npm test
         working-directory: app
 
+  # The chart and the Terraform are as much of the product as the application
+  # is. Without this, a chart that fails to render would still publish an image
+  # and only break once ArgoCD tried to sync it.
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: azure/setup-helm@v4
+
+      - name: Lint the chart in both TLS modes
+        run: |
+          helm lint charts/preview-app --set ingress.host=pr-1.127-0-0-1.nip.io
+          helm lint charts/preview-app \
+            --set ingress.host=pr-1.127-0-0-1.nip.io \
+            --set ingress.tls.enabled=true
+
+      - name: Render the chart the way ArgoCD will
+        run: |
+          helm template preview-pr-1 charts/preview-app \
+            --namespace pr-1 \
+            --set environment=pr-1 \
+            --set prNumber=1 \
+            --set namespace.create=true \
+            --set ingress.host=pr-1.127-0-0-1.nip.io > /tmp/rendered.yaml
+          test -s /tmp/rendered.yaml
+
+      - name: Fail if the chart forgets the pull request identity
+        run: |
+          grep -q 'name: PR_NUMBER' /tmp/rendered.yaml
+          grep -q 'value: "pr-1"' /tmp/rendered.yaml
+          grep -q 'host: "pr-1.127-0-0-1.nip.io"' /tmp/rendered.yaml
+          # A namespace ArgoCD does not own cannot be pruned, which leaks one
+          # namespace per pull request.
+          grep -q 'kind: Namespace' /tmp/rendered.yaml
+
+      - uses: hashicorp/setup-terraform@v3
+      - name: Validate the Terraform
+        run: terraform init -backend=false -input=false && terraform validate
+        working-directory: infra
+
   build:
-    # A failing test must never produce a preview environment.
-    needs: test
+    # A failing test or an unrenderable chart must never produce an environment.
+    needs: [test, manifests]
     runs-on: ubuntu-latest
     permissions:
       contents: read
