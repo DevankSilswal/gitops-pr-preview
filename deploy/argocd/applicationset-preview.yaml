@@ -62,7 +62,7 @@ spec:
             - name: gitSha
               value: "{{head_sha}}"
             - name: ingress.host
-              value: "pr-{{number}}.__NODE_IP__.nip.io"
+              value: "pr-{{number}}.__PREVIEW_BASE_HOST__"
       destination:
         server: https://kubernetes.default.svc
         namespace: "pr-{{number}}"

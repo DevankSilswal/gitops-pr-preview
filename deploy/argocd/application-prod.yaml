@@ -30,7 +30,7 @@ spec:
         - name: prNumber
           value: "none"
         - name: ingress.host
-          value: "app.__NODE_IP__.nip.io"
+          value: "app.__PREVIEW_BASE_HOST__"
   destination:
     server: https://kubernetes.default.svc
     namespace: production
