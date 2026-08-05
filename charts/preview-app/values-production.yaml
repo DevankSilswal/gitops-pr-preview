@@ -9,7 +9,7 @@
 # of those properties: the cluster's state stops being derivable from the
 # repository, and ArgoCD cannot tell that anything changed.
 image:
-  tag: main-96c8fbe95bdc77bd73be9c5f74b4088e90194611
+  tag: main-6f3b0d119fb2e2bc2b8652049bb7f0b1d1bbbe9c
 
 environment: production
 prNumber: "none"
