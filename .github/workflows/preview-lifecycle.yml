@@ -54,6 +54,15 @@ jobs:
             const pr = context.payload.pull_request;
             const { owner, repo } = context.repo;
 
+            // Dependency bumps do not need somewhere to click. Left alone they
+            // arrive several at a time and take most of the capacity of a
+            // single-node cluster; label one by hand on the rare occasion a
+            // bump is worth looking at.
+            if (pr.user.type === 'Bot') {
+              core.info(`#${pr.number} was opened by ${pr.user.login}; no environment`);
+              return;
+            }
+
             // A fork's build runs with a read-only token, so it cannot publish
             // the image the environment needs. Say so, rather than granting a
             // label that produces an environment stuck on ImagePullBackOff.
