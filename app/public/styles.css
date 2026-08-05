@@ -2,14 +2,14 @@
    one of them changes the entire site, which makes a preview environment
    worth opening rather than worth taking someone's word for. */
 :root {
-  --accent: #7c5cff;
-  --accent-soft: rgba(124, 92, 255, 0.14);
-  --bg: #0b0b12;
-  --surface: #14141f;
+  --accent: #00ffa3;
+  --accent-soft: rgba(0, 255, 163, 0.14);
+  --bg: #05100c;
+  --surface: #0c1c16;
 
   --text: #f2f2f7;
   --muted: #9a9ab0;
-  --border: #24243a;
+  --border: #163a2c;
   --radius: 14px;
 }
 
