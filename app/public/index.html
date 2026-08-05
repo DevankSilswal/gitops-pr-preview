@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pixel Arcade</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="wrap bar">
+        <div class="logo"><span class="dot">🎮</span> Pixel Arcade</div>
+        <nav>
+          <a href="#games">Games</a>
+          <a href="#play">Play</a>
+          <a href="#">Leaderboard</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <h1>Play something <span>right now</span></h1>
+        <p>
+          No downloads, no accounts, no waiting. Pick a game and start — every
+          one of them runs in your browser.
+        </p>
+        <button class="btn" onclick="document.getElementById('play').scrollIntoView({behavior:'smooth'})">
+          Start playing
+        </button>
+      </section>
+
+      <section id="games">
+        <h2>Popular this week</h2>
+        <div class="games">
+          <article class="card">
+            <div class="art">🚀</div>
+            <h3>Nebula Run</h3>
+            <p>Endless runner · 2.4k playing</p>
+          </article>
+          <article class="card">
+            <div class="art">🧩</div>
+            <h3>Tile Logic</h3>
+            <p>Puzzle · 1.1k playing</p>
+          </article>
+          <article class="card">
+            <div class="art">⚔️</div>
+            <h3>Shadow Duel</h3>
+            <p>Fighting · 3.8k playing</p>
+          </article>
+          <article class="card">
+            <div class="art">🏎️</div>
+            <h3>Turbo Drift</h3>
+            <p>Racing · 900 playing</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="play">
+        <h2>Quick Reflex</h2>
+        <div class="arena">
+          <div class="arena-head">
+            <div class="score">Score <b id="score">0</b></div>
+            <div class="score">Time <b id="time">20</b>s</div>
+            <button class="btn" id="start">Start game</button>
+          </div>
+          <div id="board"><div class="hint" id="hint">Press start, then hit the targets</div></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="wrap">Pixel Arcade — a demo application for preview environments.</footer>
+
+    <div id="env-badge"><strong>loading…</strong></div>
+
+    <script>
+      // Which environment am I looking at? Served by the platform, not baked
+      // into the page, so the same build reports differently per environment.
+      //
+      // Built with textContent rather than innerHTML on purpose: these values
+      // originate in branch names, and a branch name can contain markup. There
+      // is no reason for this badge to be the one place a pull request can
+      // inject script into a reviewer's browser.
+      fetch('/api/info')
+        .then((r) => r.json())
+        .then((i) => {
+          const badge = document.getElementById('env-badge');
+          badge.textContent = '';
+
+          const name = document.createElement('strong');
+          name.textContent = i.environment;
+          badge.appendChild(name);
+
+          if (i.prNumber !== 'none') {
+            badge.appendChild(document.createTextNode('pull request #' + i.prNumber));
+            badge.appendChild(document.createElement('br'));
+          }
+          badge.appendChild(document.createTextNode('build ' + String(i.gitSha).slice(0, 7)));
+        })
+        .catch(() => {
+          document.getElementById('env-badge').textContent = 'environment unknown';
+        });
+
+      // --- Quick Reflex -----------------------------------------------------
+      const board = document.getElementById('board');
+      const hint = document.getElementById('hint');
+      const scoreEl = document.getElementById('score');
+      const timeEl = document.getElementById('time');
+      const startBtn = document.getElementById('start');
+
+      const ROUND_SECONDS = 20;
+      const TARGET_SIZE = 46;
+      let score = 0;
+      let left = ROUND_SECONDS;
+      let ticker = null;
+
+      function place() {
+        board.querySelectorAll('.target').forEach((t) => t.remove());
+        const b = document.createElement('button');
+        b.className = 'target';
+        b.style.left = Math.random() * (board.clientWidth - TARGET_SIZE) + 'px';
+        b.style.top = Math.random() * (board.clientHeight - TARGET_SIZE) + 'px';
+        b.addEventListener('click', () => {
+          score += 1;
+          scoreEl.textContent = score;
+          place();
+        });
+        board.appendChild(b);
+      }
+
+      function stop() {
+        clearInterval(ticker);
+        ticker = null;
+        board.querySelectorAll('.target').forEach((t) => t.remove());
+        hint.textContent = 'Finished with ' + score + '. Press start to try again.';
+        hint.style.display = 'grid';
+        startBtn.textContent = 'Play again';
+      }
+
+      startBtn.addEventListener('click', () => {
+        if (ticker) return;
+        score = 0;
+        left = ROUND_SECONDS;
+        scoreEl.textContent = '0';
+        timeEl.textContent = String(left);
+        hint.style.display = 'none';
+        place();
+
+        ticker = setInterval(() => {
+          left -= 1;
+          timeEl.textContent = String(left);
+          if (left <= 0) stop();
+        }, 1000);
+      });
+    </script>
+  </body>
+</html>

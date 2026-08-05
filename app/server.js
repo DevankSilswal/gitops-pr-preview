@@ -1,3 +1,4 @@
+const path = require('node:path');
 const express = require('express');
 
 const app = express();
@@ -12,32 +13,11 @@ function buildInfo() {
   };
 }
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  }[char]));
-}
-
-app.get('/', (req, res) => {
-  const info = buildInfo();
-  res.type('html').send(`<!doctype html>
-<html>
-  <head><title>Preview Environment</title></head>
-  <body style="font-family: sans-serif; padding: 2rem;">
-    <h1>Preview Environment</h1>
-    <ul>
-      <li><strong>Environment:</strong> ${escapeHtml(info.environment)}</li>
-      <li><strong>PR Number:</strong> ${escapeHtml(info.prNumber)}</li>
-      <li><strong>Git SHA:</strong> ${escapeHtml(info.gitSha)}</li>
-      <li><strong>Built At:</strong> ${escapeHtml(info.builtAt)}</li>
-    </ul>
-  </body>
-</html>`);
-});
+// The site is static; only its identity changes between environments, and the
+// page asks for that at runtime. Serving the same bytes everywhere means a
+// preview shows the build that was actually published, not one re-rendered for
+// the occasion.
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -49,7 +29,7 @@ app.get('/api/info', (req, res) => {
 
 if (require.main === module) {
   const server = app.listen(port, () => {
-    console.log(`preview-app listening on port ${port}`);
+    console.log(`pixel-arcade listening on port ${port}`);
   });
 
   // Kubernetes sends SIGTERM before removing a pod. Preview environments are

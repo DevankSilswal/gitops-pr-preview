@@ -35,6 +35,7 @@ RUN rm -rf /usr/local/lib/node_modules/npm \
 RUN addgroup -g 10001 -S appgroup && adduser -u 10001 -S appuser -G appgroup
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json server.js ./
+COPY public ./public
 USER appuser
 EXPOSE 3000
 CMD ["node", "server.js"]

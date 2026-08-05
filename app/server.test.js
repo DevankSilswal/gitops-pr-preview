@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 const app = require('./server');
 
 // One server for the whole suite. Starting and stopping a listener per request
@@ -17,13 +19,13 @@ test.before(async () => {
 
 test.after(() => server.close());
 
-function get(path) {
+function get(pathname) {
   return new Promise((resolve, reject) => {
     http
-      .get(`${baseUrl}${path}`, (res) => {
+      .get(`${baseUrl}${pathname}`, (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => resolve({ status: res.statusCode, body: data }));
+        res.on('end', () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
       })
       .on('error', reject);
   });
@@ -60,7 +62,9 @@ test('GET /api/info defaults to local values when env is unset', async () => {
 });
 
 // This is the mechanism every preview environment relies on: CI and Kubernetes
-// inject build identity via env vars, and the app must report it back.
+// inject build identity via env vars, and the app must report it back. The page
+// reads this at runtime, which is what lets one image identify itself
+// differently in every environment it runs in.
 test('GET /api/info reflects injected env vars', async (t) => {
   withEnv(t, {
     ENVIRONMENT: 'pr-42',
@@ -78,29 +82,31 @@ test('GET /api/info reflects injected env vars', async (t) => {
   });
 });
 
-test('GET / renders build info as HTML', async (t) => {
-  withEnv(t, { ENVIRONMENT: 'pr-7', PR_NUMBER: '7' });
-
+test('the site is served at the root', async () => {
   const res = await get('/');
   assert.strictEqual(res.status, 200);
-  assert.match(res.body, /Preview Environment/);
-  assert.match(res.body, /pr-7/);
+  assert.match(res.headers['content-type'], /text\/html/);
+  assert.match(res.body, /Pixel Arcade/);
 });
 
-// Branch names reach these values, and a branch name can contain almost
-// anything. Rendering one unescaped would make every preview environment a
-// stored-XSS vector against whoever reviews the pull request.
-test('GET / escapes HTML in environment values', async (t) => {
-  withEnv(t, {
-    ENVIRONMENT: '<script>alert(1)</script>',
-    PR_NUMBER: '" onmouseover="alert(2)',
-  });
+test('static assets are served', async () => {
+  const res = await get('/styles.css');
+  assert.strictEqual(res.status, 200);
+  assert.match(res.headers['content-type'], /text\/css/);
+});
 
-  const res = await get('/');
-  assert.doesNotMatch(res.body, /<script>alert\(1\)<\/script>/);
-  assert.match(res.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-  assert.doesNotMatch(res.body, /onmouseover="alert\(2\)/);
-  assert.match(res.body, /&quot; onmouseover=&quot;alert\(2\)/);
+// The badge shows values that originate in branch names, and a branch name can
+// contain markup. Building it with innerHTML would make every preview
+// environment a way to run script in a reviewer's browser — a regression that
+// would be invisible in review, so it is asserted here instead.
+test('the environment badge is not built with innerHTML', () => {
+  const page = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+  const badgeScript = page.slice(page.indexOf("fetch('/api/info')"));
+  assert.doesNotMatch(
+    badgeScript.slice(0, 900),
+    /innerHTML/,
+    'the badge must use textContent; these values come from branch names',
+  );
 });
 
 test('unknown routes return 404', async () => {
