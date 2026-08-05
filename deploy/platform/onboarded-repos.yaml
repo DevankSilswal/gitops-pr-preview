@@ -42,3 +42,12 @@ repos:
     image: ghcr.io/devanksilswal/preview-app
     port: 3000
     healthPath: /api/health
+
+  # A second repository, onboarded without touching anything else here: a
+  # different language, a different port, a different health path.
+  - slug: notes
+    owner: DevankSilswal
+    repo: notes-board
+    image: ghcr.io/devanksilswal/notes-board
+    port: 8080
+    healthPath: /healthz
