@@ -94,6 +94,7 @@ if [[ -n "${WITH_OBSERVABILITY:-}" ]]; then
     --values "$REPO_ROOT/deploy/platform/observability/values.yaml" \
     --wait --timeout 15m
   kubectl apply -f "$REPO_ROOT/deploy/platform/observability/dashboard.yaml"
+  kubectl apply -f "$REPO_ROOT/deploy/platform/observability/alerts.yaml"
 else
   echo "==> Skipping observability (set WITH_OBSERVABILITY=1 to enable)"
 fi

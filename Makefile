@@ -5,7 +5,7 @@ DEMO_HOST ?= pr-1.127.0.0.1.nip.io
 KIND_CLUSTER := gitops-preview
 
 .DEFAULT_GOAL := help
-.PHONY: help test lint render validate tf-validate workflow-scripts e2e bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
+.PHONY: help test lint render validate tf-validate workflow-scripts alerts e2e bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -34,7 +34,10 @@ tf-validate: ## Validate the Terraform for every supported cloud
 workflow-scripts: ## Syntax-check the JavaScript embedded in workflows
 	./scripts/check-workflow-scripts.sh
 
-validate: test lint workflow-scripts tf-validate ## Everything that can be checked without a cluster
+alerts: ## Unit-test the Prometheus alert rules
+	./scripts/check-alerts.sh
+
+validate: test lint workflow-scripts alerts tf-validate ## Everything that can be checked without a cluster
 	@echo "All offline checks passed."
 
 bootstrap: ## Install the platform onto the cluster in the current kube context

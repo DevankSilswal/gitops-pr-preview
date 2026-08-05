@@ -77,6 +77,18 @@ jobs:
       - name: Syntax-check the scripts embedded in workflows
         run: ./scripts/check-workflow-scripts.sh
 
+      - name: Install promtool
+        run: |
+          set -euo pipefail
+          VER=3.13.2
+          curl -sSfL "https://github.com/prometheus/prometheus/releases/download/v$VER/prometheus-$VER.linux-amd64.tar.gz" \
+            | tar -xz --strip-components=1 -C /usr/local/bin "prometheus-$VER.linux-amd64/promtool"
+
+      # An alert that parses but never fires is worse than no alert, because
+      # everyone assumes something is watching.
+      - name: Unit-test the alert rules
+        run: ./scripts/check-alerts.sh
+
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
       - name: Validate the Terraform for every supported cloud
         run: |

@@ -1,0 +1,100 @@
+# Alerts for preview environments.
+#
+# The dashboard shows how many environments exist, which is only useful if
+# someone is looking at it. These fire on the failures this platform has
+# actually produced: an image tag that does not exist, a pod that starts and
+# never passes its probes, and an environment that quietly outstays its
+# namespace quota.
+#
+# Everything is scoped to pr-* namespaces. Production has different
+# expectations and should not share thresholds with throwaway environments.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: preview-environments
+  namespace: monitoring
+  labels:
+    # kube-prometheus-stack only adopts rules carrying its release label.
+    release: monitoring
+spec:
+  groups:
+    - name: preview-environments
+      rules:
+        # The single most common failure here: CI has not finished publishing
+        # the image yet, or published it for the wrong architecture. Ten
+        # minutes is past the point where a slow build explains it.
+        - alert: PreviewImagePullFailing
+          expr: |
+            max by (namespace, pod) (
+              kube_pod_container_status_waiting_reason{
+                namespace=~"pr-.*",
+                reason=~"ImagePullBackOff|ErrImagePull"
+              }
+            ) == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Preview environment {{ $labels.namespace }} cannot pull its image"
+            description: >-
+              {{ $labels.pod }} has been unable to pull its image for ten
+              minutes. Either the build has not published that tag, or the tag
+              the ApplicationSet asked for does not match the one CI produced.
+
+        # A pod that runs but never becomes ready is worse than one that
+        # crashes: the environment looks alive and serves nothing.
+        - alert: PreviewNeverBecameReady
+          expr: |
+            max by (namespace, pod) (
+              kube_pod_status_ready{namespace=~"pr-.*", condition="true"}
+            ) == 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Preview environment {{ $labels.namespace }} is not ready"
+            description: >-
+              {{ $labels.pod }} has been running without passing its readiness
+              probe for fifteen minutes, so its URL is serving nothing.
+
+        - alert: PreviewCrashLooping
+          expr: |
+            increase(
+              kube_pod_container_status_restarts_total{namespace=~"pr-.*"}[15m]
+            ) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Preview environment {{ $labels.namespace }} is crash looping"
+            description: "{{ $labels.pod }} has restarted more than three times in fifteen minutes."
+
+        # Not a failure yet, but the point at which one environment is about to
+        # start failing to schedule.
+        - alert: PreviewNearingQuota
+          expr: |
+            max by (namespace, resource) (
+              kube_resourcequota{namespace=~"pr-.*", type="used"}
+              / ignoring(type) group_left
+              kube_resourcequota{namespace=~"pr-.*", type="hard"}
+            ) > 0.9
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: "Preview environment {{ $labels.namespace }} is near its {{ $labels.resource }} quota"
+            description: "Further pods in this namespace will be refused rather than evicted."
+
+        # The fleet as a whole, rather than any one environment. If this is
+        # firing, the node is the constraint and old environments need expiring.
+        - alert: TooManyPreviewEnvironments
+          expr: count(count by (namespace) (kube_pod_info{namespace=~"pr-.*"})) > 8
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $value }} preview environments are running at once"
+            description: >-
+              More environments are open than this single node was sized for.
+              Closing stale pull requests, or lowering the lifecycle TTL, frees
+              the capacity.
