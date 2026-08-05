@@ -123,6 +123,9 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | It runs on a public cloud, not just locally | Azure VM in `eastasia`; the bootstrap script was unchanged, taking only an owner and an address |
 | Certificates are browser-trusted | Let's Encrypt production issued for both hostnames; `curl` without `-k` succeeds |
 | Releases reach production unattended | A commit pushed to `main` appeared at the live production URL with no deploy step |
+| The whole cluster rebuilds from code | The VM was destroyed and recreated by Terraform; the bootstrap script and ArgoCD restored production and every preview environment with no manual step, and the static IP kept every URL working |
+| Infrastructure code matches reality | `terraform plan` reports no changes — earlier it wanted to replace the VM, because a fix had been applied by hand and only later written down |
+| Production survives its own rollout | Two replicas, `maxUnavailable: 0`, and a disruption budget that renders only above one replica |
 
 Four bugs were found only by running this, and are fixed:
 
