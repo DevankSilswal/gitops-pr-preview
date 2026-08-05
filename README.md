@@ -62,7 +62,7 @@ A preview environment runs unreviewed code, and the chart it deploys is read fro
 | Ingress | ingress-nginx | Routes every `pr-<n>` hostname to the right namespace by Host header |
 | DNS | nip.io | Wildcard hostnames with no domain to buy or configure |
 | TLS | cert-manager + Let's Encrypt | Optional, staging issuer by default — preview hostnames churn past the production rate limit |
-| Observability | Prometheus + Grafana | Tracks active environments and what they cost |
+| Observability | Prometheus + Grafana | Tracks active environments and what they cost — needs a node with four vCPUs; see below |
 
 CI builds artifacts; ArgoCD deploys them. The pipeline holds no cluster credentials — the cluster pulls its own desired state from git. That separation is the point of GitOps.
 

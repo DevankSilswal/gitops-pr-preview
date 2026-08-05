@@ -157,3 +157,46 @@ make azure-start
 
 Stopping the machine from inside the guest does not stop billing — Azure keeps
 charging for a VM it still has reserved. Only deallocation does.
+
+## The whole cluster stops responding
+
+`kubectl` times out, SSH times out, and the preview URLs go down together. If
+the Azure control plane still answers, the machine is up and something inside
+it is starving everything else.
+
+```bash
+az vm restart -g gitops-k3s-rg -n gitops-k3s
+# then, as soon as it answers:
+ssh ubuntu@<ip> "uptime; sudo k3s kubectl get pods -A"
+```
+
+Load average is the tell. On a 2-vCPU node anything above about 4 means work is
+queueing; this has been seen at 19, at which point the API server cannot answer
+its own health checks and everything looks broken at once.
+
+The cause here was installing kube-prometheus-stack onto the node that runs
+everything else. Nothing was OOMKilled — it was purely CPU. Recovery is to
+delete the namespace from the rebooted node before the pods reschedule:
+
+```bash
+ssh ubuntu@<ip> "sudo k3s kubectl delete ns monitoring --wait=false"
+```
+
+Observability needs four vCPUs or a node of its own. See the header of
+`deploy/platform/observability/values.yaml`.
+
+## Terraform says the state is locked
+
+```
+Error acquiring the state lock: state blob is already locked
+```
+
+A previous run was interrupted before it could release the lease. Confirm
+nothing is actually running, then break it:
+
+```bash
+KEY=$(az storage account keys list -n <storage-account> -g gitops-tfstate-rg --query "[0].value" -o tsv)
+az storage blob lease break -c tfstate -b azure.tfstate --account-name <storage-account> --account-key "$KEY"
+```
+
+`terraform force-unlock <id>` does the same thing when the error reports an ID.

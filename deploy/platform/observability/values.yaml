@@ -1,6 +1,17 @@
-# kube-prometheus-stack, trimmed to fit alongside real workloads on a single
-# free-tier node. The full default install reserves more memory than the node
-# has left once ArgoCD and a handful of preview environments are running.
+# kube-prometheus-stack, sized to coexist with real workloads on a small node.
+#
+# READ THIS BEFORE INSTALLING. These values are not enough to make the stack fit
+# on two vCPUs. Installed onto the 2-vCPU / 4 GB node that runs everything else,
+# it drove load average past 19 — the API server stopped answering, SSH stopped
+# answering, and the live preview URLs went down until the namespace was deleted
+# from a rebooted node. Nothing was OOMKilled; the node simply ran out of CPU.
+#
+# So: four vCPUs or more, or a node of its own. On the small node the platform
+# runs without it, which costs the alerts in alerts.yaml and nothing else.
+#
+# The defaults assume monitoring has a machine to itself, and the trims below
+# are still worth having on a modest node — they are just not sufficient on a
+# node this size.
 
 grafana:
   adminPassword: admin
@@ -10,34 +21,84 @@ grafana:
       enabled: true
       searchNamespace: ALL
   resources:
+    # Grafana is slow to start, and starving it of CPU makes that worse rather
+    # than cheaper: at 25m it took over a minute to initialise, missed its
+    # liveness probe, and was killed and restarted forever. Memory was never
+    # the constraint — the container was terminated, not OOMKilled.
     requests:
-      cpu: 50m
+      cpu: 100m
       memory: 128Mi
+    limits:
+      memory: 320Mi
+  # Startup on a shared node is measured in tens of seconds. The defaults
+  # assume it is measured in a few.
+  livenessProbe:
+    initialDelaySeconds: 120
+    timeoutSeconds: 30
+    failureThreshold: 10
+    periodSeconds: 20
+  readinessProbe:
+    initialDelaySeconds: 30
+    timeoutSeconds: 15
+    failureThreshold: 15
+    periodSeconds: 15
 
 prometheus:
   prometheusSpec:
-    # Preview environments are short-lived; a long retention window would store
-    # mostly series for namespaces that no longer exist.
-    retention: 3d
+    # Preview environments are short-lived, so a long window mostly retains
+    # series for namespaces that no longer exist.
+    retention: 2d
+    retentionSize: 3GB
     resources:
       requests:
         cpu: 100m
-        memory: 512Mi
+        memory: 320Mi
       limits:
-        memory: 1Gi
+        memory: 700Mi
     storageSpec:
       volumeClaimTemplate:
         spec:
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
-              storage: 10Gi
+              storage: 5Gi
 
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+kube-state-metrics:
+  # Every alert here is built on this component: pod phases, container waiting
+  # reasons, restart counts and quota usage all come from it rather than from
+  # the application.
+  resources:
+    requests:
+      cpu: 10m
+      memory: 48Mi
+    limits:
+      memory: 160Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      memory: 64Mi
+
+# Alerts are read in Grafana. Alertmanager would add another component, and a
+# few hundred more megabytes, to route them to a destination this project does
+# not have.
 alertmanager:
   enabled: false
 
-# The control plane components below are not individually scrapeable on k3s,
-# and leaving them on produces permanently firing "target down" noise.
+# k3s runs these inside one process rather than as separately scrapeable
+# components, so leaving them enabled produces permanently firing "target down"
+# alerts — which teaches everyone to ignore the alert list.
 kubeControllerManager:
   enabled: false
 kubeScheduler:
