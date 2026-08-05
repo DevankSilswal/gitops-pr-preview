@@ -1,0 +1,20 @@
+{{- if gt (int .Values.replicaCount) 1 -}}
+# Protects the long-lived environment from voluntary disruption — a node drain,
+# an eviction, a cluster upgrade — taking every replica at once.
+#
+# Only rendered above one replica, because a budget over a single-replica
+# deployment is worse than none: it cannot be satisfied, so it blocks drains
+# indefinitely instead of protecting anything. Preview environments run one
+# replica and are meant to be disposable, so they get no budget.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "preview-app.fullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "preview-app.selectorLabels" . | nindent 6 }}
+{{- end }}

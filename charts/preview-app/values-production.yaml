@@ -13,3 +13,8 @@ image:
 
 environment: production
 prNumber: "none"
+
+# Two replicas so a rollout, an eviction or a node drain has somewhere to send
+# traffic. Preview environments deliberately stay at one — they are disposable,
+# and a second replica each would cost more than the whole fleet is worth.
+replicaCount: 2

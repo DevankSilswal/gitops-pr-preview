@@ -6,6 +6,15 @@ metadata:
     {{- include "preview-app.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never drop below the desired count during a rollout. The default
+      # allows one pod to go away before its replacement is ready, which on a
+      # single-replica deployment is a gap with no server behind the URL —
+      # every release visibly failing for whoever happens to be looking.
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       {{- include "preview-app.selectorLabels" . | nindent 6 }}
