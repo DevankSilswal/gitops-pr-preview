@@ -24,3 +24,7 @@ npm start
 docker build -t preview-app .
 docker run -p 3000:3000 -e PR_NUMBER=42 -e GIT_SHA=abc123 preview-app
 ```
+
+## Live
+
+This application is deployed by the platform in this repository.
