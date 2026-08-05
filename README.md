@@ -29,8 +29,8 @@ ArgoCD ApplicationSet (PR generator)
       v
 Kubernetes cluster
       |
-      +-- namespace: pr-<number>
-      +-- ingress:   pr-<number>.<node-ip-in-dashes>.nip.io
+      +-- namespace: <slug>-pr-<number>
+      +-- ingress:   <slug>-pr-<number>.<node-ip-in-dashes>.nip.io
       |
       v
 Reviewer opens the URL, posted back as a PR comment
@@ -46,9 +46,10 @@ That matters because the obvious alternative, a cron job that deletes stale name
 
 ### Preview environments are hostile by default
 
-A preview environment runs unreviewed code, and the chart it deploys is read from the pull request's own branch. Treating that as trusted is the mistake this design is built around avoiding.
+A preview environment runs unreviewed code, in many cases from a repository this platform's operator does not control. Treating that as trusted is the mistake this design is built around avoiding.
 
-- **ArgoCD's `default` project is not used.** It permits every repository, namespace and resource kind, which means a pull request could add a ClusterRoleBinding to the chart and have ArgoCD apply it with its own privileges — opening a pull request would mean owning the cluster. Previews run under a project scoped to this repository, `pr-*` namespaces, and a resource list containing nothing that grants permissions.
+- **The chart comes from the platform, not the pull request.** It used to be read from the branch under review, which meant anyone able to open a pull request could add a ClusterRoleBinding to it and have ArgoCD apply it with ArgoCD's privileges. A pull request can now change what is deployed, never how.
+- **ArgoCD's `default` project is not used.** It permits every repository, namespace and resource kind. Previews run under a project scoped to the chart repository, `*-pr-*` namespaces, and a resource list containing nothing that grants permissions.
 - **Environments cannot reach each other.** A NetworkPolicy admits only the ingress controller and permits egress to DNS and the public internet with the private ranges carved out, including the link-local metadata service that hands instance credentials to anything that asks.
 - **One environment cannot starve the rest.** A ResourceQuota caps each namespace and a LimitRange supplies defaults, so a pull request that leaks memory or asks for ten replicas is refused rather than allowed to take the node down.
 - **The container holds nothing it does not need.** It runs as a fixed non-root UID on a read-only root filesystem with all capabilities dropped, and npm is deleted from the runtime image — nothing there invokes it, and its bundled dependencies were the source of every CRITICAL the image scan reported.
@@ -61,7 +62,7 @@ A preview environment runs unreviewed code, and the chart it deploys is read fro
 | GitOps | ArgoCD + ApplicationSet PR generator | The PR generator is what makes per-PR environments declarative rather than scripted |
 | CI | GitHub Actions | Builds and pushes images; never talks to the cluster directly |
 | Registry | GHCR | Free for public images, native GitHub auth |
-| Ingress | ingress-nginx | Routes every `pr-<n>` hostname to the right namespace by Host header |
+| Ingress | ingress-nginx | Routes every `<slug>-pr-<n>` hostname to the right namespace by Host header |
 | DNS | nip.io | Wildcard hostnames with no domain to buy or configure |
 | TLS | cert-manager + Let's Encrypt | Optional, staging issuer by default — preview hostnames churn past the production rate limit |
 | Observability | Prometheus + Grafana | Tracks active environments and what they cost — needs a node with four vCPUs; see below |
@@ -73,7 +74,9 @@ CI builds artifacts; ArgoCD deploys them. The pipeline holds no cluster credenti
 ```
 app/                                    Sample service deployed into each environment
 charts/preview-app/                     Helm chart, one release per environment
+deploy/platform/onboarded-repos.yaml           Which repositories get environments — onboarding is an edit here
 deploy/argocd/applicationset-preview.yaml      Pull request generator — the core mechanism
+.github/workflows/preview-build.yml            Reusable workflow other repositories call
 deploy/argocd/application-prod.yaml            main branch, same chart
 .github/workflows/build.yml             Test, multi-arch build, GHCR push, PR comment, release
 .github/workflows/preview-lifecycle.yml Grants the preview label, expires it on TTL
@@ -95,7 +98,7 @@ The application in `app/` is deliberately trivial. It reports its own environmen
 - [x] **Phase 2 — Deployable unit.** Helm chart rendering a Deployment, Service and Ingress per environment, with probes on `/api/health`. Verified with `helm lint` / `helm template`.
 - [x] **Phase 3 — CI.** GitHub Actions runs the tests, then builds and pushes an `amd64`/`arm64` image to GHCR tagged `pr-<number>-<head-sha>`. CI holds no cluster credentials; releasing to production is a commit to a values file that ArgoCD reads.
 - [x] **Phase 4 — GitOps definitions.** ApplicationSet PR generator and the production Application, both written and YAML-validated.
-- [x] **Phase 5 — Infrastructure as code.** Terraform for Azure and for Oracle Cloud, each provisioning one VM running k3s via cloud-init, plus a cloud-agnostic bootstrap script that takes only a GitHub owner and a node address.
+- [x] **Phase 5 — Infrastructure as code.** Terraform for Azure and for Oracle Cloud, each provisioning one VM running k3s via cloud-init, plus a cloud-agnostic bootstrap script that takes only a node address.
 - [x] **Phase 6 — Lifecycle and operations.** Label-driven TTL expiry, preview URL posted as a pull request comment, optional Let's Encrypt TLS, a locked-down pod security context, and a Grafana dashboard covering the fleet.
 - [x] **Phase 7 — Proven end to end** against a live cluster. See below.
 - [x] **Phase 8 — A public cluster.** Running on Azure with browser-trusted TLS. The manifests did not change; only the address did.
