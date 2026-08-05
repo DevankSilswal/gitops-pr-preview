@@ -5,7 +5,7 @@ DEMO_HOST ?= pr-1.127.0.0.1.nip.io
 KIND_CLUSTER := gitops-preview
 
 .DEFAULT_GOAL := help
-.PHONY: help test lint render validate tf-validate bootstrap dev-cluster dev-bootstrap dev-down clean
+.PHONY: help test lint render validate tf-validate bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -24,8 +24,12 @@ render: ## Render the chart as ArgoCD would for pull request 1
 		--set prNumber=1 \
 		--set ingress.host=$(DEMO_HOST)
 
-tf-validate: ## Validate the Terraform without contacting Oracle
-	cd infra && terraform init -backend=false -input=false >/dev/null && terraform validate
+tf-validate: ## Validate the Terraform for every supported cloud
+	@for dir in infra/*/; do \
+		echo "== $$dir"; \
+		terraform -chdir="$$dir" init -backend=false -input=false >/dev/null; \
+		terraform -chdir="$$dir" validate; \
+	done
 
 validate: test lint tf-validate ## Everything that can be checked without a cluster
 	@echo "All offline checks passed."
@@ -46,5 +50,21 @@ dev-bootstrap: ## Install the platform onto the local kind cluster
 dev-down: ## Delete the local kind cluster
 	kind delete cluster --name $(KIND_CLUSTER)
 
+azure-up: ## Provision the Azure VM and print the bootstrap command
+	terraform -chdir=infra/azure init -input=false
+	terraform -chdir=infra/azure apply
+
+# Deallocating stops compute charges while keeping the disk and the static IP,
+# which is what actually makes a student credit last. Stopping from inside the
+# guest does not: Azure keeps billing a VM it still has reserved.
+azure-stop: ## Deallocate the VM so it stops costing credit
+	az vm deallocate -g gitops-k3s-rg -n gitops-k3s
+
+azure-start: ## Bring the VM back up
+	az vm start -g gitops-k3s-rg -n gitops-k3s
+
+azure-down: ## Destroy everything in Azure
+	terraform -chdir=infra/azure destroy
+
 clean: ## Remove local build artefacts
-	rm -rf app/node_modules infra/.terraform
+	rm -rf app/node_modules infra/*/.terraform

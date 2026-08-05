@@ -1,0 +1,26 @@
+#cloud-config
+package_update: true
+
+write_files:
+  # k3s signs its API certificate for the addresses it knows about at install
+  # time, and the node only knows its private address. Without the public one
+  # listed here, kubectl from a laptop fails verification against an otherwise
+  # healthy cluster:
+  #
+  #   certificate is valid for 10.0.1.4, 10.43.0.1, 127.0.0.1 — not <public ip>
+  - path: /etc/rancher/k3s/config.yaml
+    permissions: '0600'
+    content: |
+      tls-san:
+        - ${public_ip}
+
+runcmd:
+  # No iptables surgery here, unlike the Oracle image: Azure's Ubuntu images
+  # ship with an open local firewall and the network security group is what
+  # actually gates traffic.
+
+  # k3s ships Traefik by default; we standardise on ingress-nginx so the
+  # ingress annotations match what any other Kubernetes cluster expects.
+  - curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --write-kubeconfig-mode 644" sh -
+  - until kubectl get nodes >/dev/null 2>&1; do sleep 5; done
+  - kubectl wait --for=condition=Ready node --all --timeout=300s

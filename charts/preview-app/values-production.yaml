@@ -1,0 +1,15 @@
+# What production is running, as a file in git.
+#
+# CI rewrites image.tag here on every merge to main and commits it. That commit
+# is the deployment: ArgoCD notices it and rolls the change out. Nothing in the
+# pipeline ever holds cluster credentials, and `git log` on this file is the
+# deployment history — including how to roll back, which is a revert.
+#
+# The obvious alternative, pointing production at a `latest` tag, breaks both
+# of those properties: the cluster's state stops being derivable from the
+# repository, and ArgoCD cannot tell that anything changed.
+image:
+  tag: main-54b7da09098a864f5e15cd1c0f447222fbcbffd2
+
+environment: production
+prNumber: "none"
