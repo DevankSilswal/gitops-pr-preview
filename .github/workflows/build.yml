@@ -97,8 +97,10 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     outputs:
-      # Consumed by promote, which writes it into the production values file.
+      # Consumed by promote, which writes it into the production values file,
+      # and by e2e, which deploys exactly this artefact to a real cluster.
       tag: ${{ steps.meta.outputs.tag }}
+      image: ${{ steps.meta.outputs.image }}
     permissions:
       contents: read
       packages: write
@@ -247,3 +249,33 @@ jobs:
           git commit -m "chore(release): deploy ${TAG} to production"
           git push
           echo "promoted $current -> $TAG" >> "$GITHUB_STEP_SUMMARY"
+
+  # Renders and lints prove the templates are well formed. This proves the
+  # things only a cluster can: that probes pass, that ingress routes by Host,
+  # that the kubelet honours the security context, and that removing a release
+  # removes its workloads. Every one of those has broken here before.
+  e2e:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: e2e
+          config: scripts/kind-cluster.yaml
+
+      - name: Exercise a preview environment end to end
+        run: ./scripts/e2e-test.sh "${{ needs.build.outputs.image }}" "${{ needs.build.outputs.tag }}"
+
+      - name: Show what the cluster was doing if it failed
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl describe pods -n e2e-pr || true
+          kubectl logs -n e2e-pr -l app.kubernetes.io/name=preview-app --tail=50 || true

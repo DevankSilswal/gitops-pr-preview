@@ -5,7 +5,7 @@ DEMO_HOST ?= pr-1.127.0.0.1.nip.io
 KIND_CLUSTER := gitops-preview
 
 .DEFAULT_GOAL := help
-.PHONY: help test lint render validate tf-validate workflow-scripts bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
+.PHONY: help test lint render validate tf-validate workflow-scripts e2e bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -41,6 +41,13 @@ bootstrap: ## Install the platform onto the cluster in the current kube context
 	@test -n "$(OWNER)" || { echo "usage: make bootstrap OWNER=<github-owner> NODE_IP=<ip>"; exit 1; }
 	@test -n "$(NODE_IP)" || { echo "usage: make bootstrap OWNER=<github-owner> NODE_IP=<ip>"; exit 1; }
 	./scripts/bootstrap-cluster.sh $(OWNER) $(NODE_IP)
+
+e2e: ## Run the end-to-end test against a throwaway kind cluster
+	@test -n "$(IMAGE_TAG)" || { echo "usage: make e2e IMAGE_TAG=main-<sha>"; exit 1; }
+	kind create cluster --name e2e --config scripts/kind-cluster.yaml
+	@kubectl config use-context kind-e2e >/dev/null
+	-./scripts/e2e-test.sh ghcr.io/devanksilswal/preview-app $(IMAGE_TAG)
+	kind delete cluster --name e2e
 
 dev-cluster: ## Create a local kind cluster with ports 80 and 443 mapped
 	kind create cluster --name $(KIND_CLUSTER) --config scripts/kind-cluster.yaml
