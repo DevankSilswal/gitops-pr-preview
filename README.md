@@ -1,8 +1,10 @@
 # GitOps Platform with PR Preview Environments
 
-**Live:** https://app.20-24-211-179.nip.io/api/info — the `main` branch, deployed by ArgoCD from a commit CI made to this repository.
+**Live:** https://app.20-24-211-179.nip.io — the `main` branch, deployed by ArgoCD from a commit CI made to this repository.
 
-Open a pull request here and a second environment appears at `https://pr-<number>.20-24-211-179.nip.io` within about a minute, then disappears when the pull request closes.
+Open a pull request here and a second environment appears at `https://arcade-pr-<number>.20-24-211-179.nip.io` within about a minute, then disappears when the pull request closes.
+
+It is not tied to this repository. A second one, [notes-board](https://github.com/DevankSilswal/notes-board) — Python, a different port, a different health path — is served by the same cluster with no platform code of its own: [how to onboard yours](docs/onboarding.md).
 
 
 Every pull request automatically gets its own isolated, publicly reachable Kubernetes environment — created when the PR opens, updated on every push, and destroyed when the PR closes. Think Vercel/Netlify preview deploys, built from scratch on Kubernetes with ArgoCD.
@@ -81,6 +83,7 @@ infra/azure/                            Terraform for an Azure VM running k3s
 infra/oracle/                           The same, on Oracle Cloud Always Free
 scripts/bootstrap-cluster.sh            One-shot cluster setup
 scripts/e2e-test.sh                     Preview environment tested on a real cluster
+docs/onboarding.md                      How another repository adopts this
 docs/runbook.md                         Every failure this platform has actually produced
 ```
 
@@ -111,6 +114,7 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | Container runs unprivileged | `id` inside the pod: `uid=10001(appuser)`, read-only root filesystem |
 | Removing the label tears it down | Application, namespace and URL all gone; the URL returns 404 |
 | Nothing leaks | Zero `pr-*` namespaces remain afterwards |
+| A second repository works with no platform changes | `notes-board` — Python, port 8080, `/healthz` — onboarded with four lines of registry and a workflow call, and served from the same cluster |
 | CI comments the preview URL | Posted once, then edited in place on the next push rather than duplicated |
 | TTL sweep expires an idle environment | Label removed, PR commented, environment gone without anything deleting it directly |
 | TLS is issued per environment | `pr-1.…nip.io` served a certificate with a matching SAN; an unknown host still gets ingress-nginx's fallback |

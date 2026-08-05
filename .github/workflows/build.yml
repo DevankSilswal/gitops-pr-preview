@@ -136,6 +136,9 @@ jobs:
       # arcade, and the hostname is built from the slug.
       slug: arcade
       preview-base-host: ${{ vars.PREVIEW_BASE_HOST }}
+      # preview-lifecycle.yml grants the label here, with a cap and a bot
+      # check the reusable workflow cannot enforce from inside one repository.
+      manage-label: false
 
   # Releasing to production is a commit, not a deploy command. CI writes the
   # tag it just published into the repository; ArgoCD sees the commit and rolls

@@ -57,6 +57,14 @@ on:
         required: false
         default: 'https'
         type: string
+      manage-label:
+        description: >-
+          Create and apply the `preview` label to the pull request. Leave on for
+          an adopting repository, where nothing else does it. Turn off where a
+          lifecycle workflow already grants the label with its own rules.
+        required: false
+        default: true
+        type: boolean
       fail-on-vulnerabilities:
         description: 'Fail the build on fixable HIGH or CRITICAL findings'
         required: false
@@ -147,6 +155,41 @@ jobs:
           ignore-unfixed: true
           exit-code: ${{ inputs.fail-on-vulnerabilities && '1' || '0' }}
           format: table
+
+      # An environment exists exactly while its pull request carries this
+      # label, so in a repository with no lifecycle workflow of its own this is
+      # what admits it. The label is granted after the image is published, not
+      # before: labelling first produces an environment that sits in
+      # ImagePullBackOff until the build catches up.
+      #
+      # Note the limit: this cannot see other repositories, so the cluster-wide
+      # cap in preview-lifecycle.yml does not apply here. The
+      # TooManyPreviewEnvironments alert is what catches a shared cluster
+      # filling up.
+      - name: Grant the preview label
+        if: github.event_name == 'pull_request' && inputs.manage-label
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: 'preview' });
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              await github.rest.issues.createLabel({
+                owner, repo,
+                name: 'preview',
+                color: '0e8a16',
+                description: 'Entitles this pull request to a preview environment',
+              });
+            }
+
+            await github.rest.issues.addLabels({
+              owner, repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ['preview'],
+            });
 
       - name: Summary
         run: |
