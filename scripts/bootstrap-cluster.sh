@@ -4,7 +4,10 @@
 # already pointing at it.
 #
 #   export GITHUB_TOKEN=github_pat_...
-#   ./scripts/bootstrap-cluster.sh <github-owner> <node-public-ip>
+#   ./scripts/bootstrap-cluster.sh <node-public-ip>
+#
+# Which repositories get preview environments is not an argument here — it is
+# deploy/platform/onboarded-repos.yaml.
 #
 # Optional:
 #   ACME_EMAIL=you@example.com     also install cert-manager and TLS issuers
@@ -16,12 +19,11 @@
 
 set -euo pipefail
 
-OWNER="${1:-}"
-NODE_IP="${2:-}"
+NODE_IP="${1:-}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ -z "$OWNER" || -z "$NODE_IP" ]]; then
-  echo "usage: $0 <github-owner> <node-public-ip>" >&2
+if [[ -z "$NODE_IP" ]]; then
+  echo "usage: $0 <node-public-ip>" >&2
   exit 1
 fi
 
@@ -118,10 +120,7 @@ kubectl create secret generic github-token \
   --from-literal=token="$GITHUB_TOKEN" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-echo "==> Applying ArgoCD manifests for owner=$OWNER node=$NODE_IP"
-# GHCR paths must be lowercase even when the GitHub username is not.
-OWNER_LC=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-
+echo "==> Applying ArgoCD manifests for node=$NODE_IP"
 # nip.io splits on dashes as well as dots when it looks for an address, so a
 # dotted IP after a label like `pr-1` is misread: pr-1.127.0.0.1.nip.io
 # resolves to 1.127.0.0. Writing the address in dash form removes the
@@ -149,31 +148,24 @@ else
   TLS_ISSUER=selfsigned
 fi
 
-# The manifests are committed with placeholders so the repo carries no
-# account-specific values; they are substituted at apply time.
-render() {
-  sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
-      -e "s|__OWNER__|$OWNER|g" \
-      -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
-      -e "s|__TLS_ENABLED__|$TLS_ENABLED|g" \
-      -e "s|__TLS_ISSUER__|$TLS_ISSUER|g" \
-      -e "s|__PROD_IMAGE_TAG__|latest|g" \
-      "$1"
-}
+# The manifests are committed with placeholders, and the repository list lives
+# in one registry file, so nothing here carries account-specific values and the
+# set of repositories ArgoCD watches cannot drift from the set it is allowed to
+# deploy from. render-argocd.rb validates the registry and fails loudly rather
+# than emitting a manifest with a placeholder still in it.
+export PREVIEW_BASE_HOST TLS_ENABLED TLS_ISSUER
+export PROD_IMAGE_TAG=latest
+
+REGISTRY="$REPO_ROOT/deploy/platform/onboarded-repos.yaml"
 
 # The project must exist before anything references it, and glob order would
 # otherwise apply it last.
-render "$REPO_ROOT/deploy/argocd/appproject-previews.yaml" | kubectl apply -f -
+"$REPO_ROOT/scripts/render-argocd.rb" \
+  "$REPO_ROOT/deploy/argocd/appproject-previews.yaml" "$REGISTRY" | kubectl apply -f -
 
 for manifest in "$REPO_ROOT"/deploy/argocd/*.yaml; do
   [[ "$manifest" == *appproject-previews.yaml ]] && continue
-  sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
-      -e "s|__OWNER__|$OWNER|g" \
-      -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
-      -e "s|__TLS_ENABLED__|$TLS_ENABLED|g" \
-      -e "s|__TLS_ISSUER__|$TLS_ISSUER|g" \
-      -e "s|__PROD_IMAGE_TAG__|latest|g" \
-      "$manifest" | kubectl apply -f -
+  "$REPO_ROOT/scripts/render-argocd.rb" "$manifest" "$REGISTRY" | kubectl apply -f -
 done
 
 cat <<EOF

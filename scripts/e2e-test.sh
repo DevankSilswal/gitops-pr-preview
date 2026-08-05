@@ -17,9 +17,9 @@ set -euo pipefail
 
 IMAGE_REPO="${1:-}"
 IMAGE_TAG="${2:-}"
-NS=e2e-pr
-RELEASE=e2e-pr-1
-HOST=pr-1.127-0-0-1.nip.io
+NS=arcade-pr-1
+RELEASE=preview-arcade-1
+HOST=arcade-pr-1.127-0-0-1.nip.io
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ -z "$IMAGE_REPO" || -z "$IMAGE_TAG" ]]; then
@@ -102,7 +102,7 @@ pass "ingress routes by Host and the app reports its own identity"
 
 # An unknown host must not fall through to this environment.
 CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-  -H "Host: pr-999.127-0-0-1.nip.io" http://127.0.0.1/api/info 2>/dev/null || echo 000)
+  -H "Host: other-pr-999.127-0-0-1.nip.io" http://127.0.0.1/api/info 2>/dev/null || echo 000)
 [[ "$CODE" != "200" ]] || fail "an unrelated hostname reached this environment"
 pass "unrelated hostnames do not reach it (got $CODE)"
 

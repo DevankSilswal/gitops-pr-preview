@@ -1,0 +1,27 @@
+# Every repository this platform serves preview environments for.
+#
+# Onboarding is an edit to this file: reviewable, revertible, and visible in
+# `git log` like everything else here. Nothing is configured by clicking.
+#
+# The slug is what keeps two repositories apart. Environments are named from
+# the pull request number, and pull request #1 exists in every repository ever
+# created — without a slug, the second repository onboarded would fight the
+# first for the namespace `pr-1` and the hostname that goes with it.
+#
+# Fields:
+#   slug        short, lowercase, DNS-safe. Appears in namespaces and URLs.
+#   owner/repo  the GitHub repository to watch for pull requests
+#   image       where its CI publishes; the platform appends :pr-<n>-<sha>
+#   port        the port the application listens on
+#   healthPath  what the readiness and liveness probes ask for
+#
+# The platform's GitHub token must be able to read pull requests in every
+# repository listed here, or its environments silently never appear.
+
+repos:
+  - slug: arcade
+    owner: DevankSilswal
+    repo: gitops-pr-preview
+    image: ghcr.io/devanksilswal/preview-app
+    port: 3000
+    healthPath: /api/health

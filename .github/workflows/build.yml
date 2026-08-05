@@ -55,19 +55,40 @@ jobs:
 
       - name: Render the chart the way ArgoCD will
         run: |
-          helm template preview-pr-1 charts/preview-app \
-            --namespace pr-1 \
-            --set environment=pr-1 \
+          helm template preview-arcade-1 charts/preview-app \
+            --namespace arcade-pr-1 \
+            --set environment=arcade-pr-1 \
             --set prNumber=1 \
             --set namespace.create=true \
-            --set ingress.host=pr-1.127-0-0-1.nip.io > /tmp/rendered.yaml
+            --set ingress.host=arcade-pr-1.127-0-0-1.nip.io > /tmp/rendered.yaml
           test -s /tmp/rendered.yaml
+
+      # A chart that only works for this application is not a platform. Render
+      # it the way a differently-shaped adopter would arrive.
+      - name: Render the chart for an application with another shape
+        run: |
+          helm template preview-other-7 charts/preview-app \
+            --namespace other-pr-7 \
+            --set service.targetPort=8080 \
+            --set healthPath=/healthz \
+            --set ingress.host=other-pr-7.127-0-0-1.nip.io > /tmp/other.yaml
+          grep -q 'containerPort: 8080' /tmp/other.yaml
+          grep -q 'path: /healthz' /tmp/other.yaml
+
+      # The registry drives both what ArgoCD watches and what it may deploy
+      # from. A malformed entry should fail here, not halfway through a sync.
+      - name: Validate the onboarded-repositories registry
+        run: |
+          for m in deploy/argocd/*.yaml; do
+            PREVIEW_BASE_HOST=example.nip.io TLS_ENABLED=false TLS_ISSUER=selfsigned \
+              ./scripts/render-argocd.rb "$m" deploy/platform/onboarded-repos.yaml > /dev/null
+          done
 
       - name: Fail if the chart forgets the pull request identity
         run: |
           grep -q 'name: PR_NUMBER' /tmp/rendered.yaml
-          grep -q 'value: "pr-1"' /tmp/rendered.yaml
-          grep -q 'host: "pr-1.127-0-0-1.nip.io"' /tmp/rendered.yaml
+          grep -q 'value: "arcade-pr-1"' /tmp/rendered.yaml
+          grep -q 'host: "arcade-pr-1.127-0-0-1.nip.io"' /tmp/rendered.yaml
           # A namespace ArgoCD does not own cannot be pruned, which leaks one
           # namespace per pull request.
           grep -q 'kind: Namespace' /tmp/rendered.yaml

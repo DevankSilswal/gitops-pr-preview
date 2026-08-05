@@ -10,8 +10,8 @@
 # state could not be read back out of the repository, and ArgoCD would have no
 # way to tell that a release had happened.
 #
-# __OWNER__ and __PREVIEW_BASE_HOST__ are substituted by
-# scripts/bootstrap-cluster.sh.
+# The placeholders below are filled in at apply time by
+# scripts/render-argocd.rb.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
