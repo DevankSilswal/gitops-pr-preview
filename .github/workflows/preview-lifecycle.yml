@@ -32,14 +32,41 @@ jobs:
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
+      # This job runs on pull_request_target, which carries write permissions.
+      # It therefore never checks out or executes the pull request's code — it
+      # only reads event metadata. Building a fork's code under this trigger
+      # would hand a stranger's branch a token that can push images and write
+      # to the repository, which is precisely the supply-chain attack the
+      # trigger is infamous for.
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+
+            // A fork's build runs with a read-only token, so it cannot publish
+            // the image the environment needs. Say so, rather than granting a
+            // label that produces an environment stuck on ImagePullBackOff.
+            if (pr.head.repo.full_name !== `${owner}/${repo}`) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pr.number,
+                body: [
+                  'No preview environment for this pull request.',
+                  '',
+                  'It comes from a fork, and builds triggered by forks get a',
+                  'read-only token that cannot publish to the registry. Building',
+                  'it with write access would mean running an unreviewed branch',
+                  'with credentials that can push images to this repository.',
+                  '',
+                  'A maintainer can push the branch here to get an environment.',
+                ].join('\n'),
+              });
+              core.info(`PR #${pr.number} is from a fork; no label granted`);
+              return;
+            }
+
             await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              labels: ['preview'],
+              owner, repo, issue_number: pr.number, labels: ['preview'],
             });
 
   expire:
