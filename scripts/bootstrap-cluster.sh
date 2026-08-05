@@ -130,7 +130,16 @@ PREVIEW_BASE_HOST="$(echo "$NODE_IP" | tr '.' '-').nip.io"
 # Preview environments get certificates only if an issuer exists to sign them.
 if [[ -n "${ACME_EMAIL:-}" ]]; then
   TLS_ENABLED=true
-  TLS_ISSUER=letsencrypt-staging
+  # Staging certificates are not trusted by browsers, so anyone opening a
+  # preview link gets a security warning — which defeats the point of handing
+  # the link to a reviewer. Production is the default; set ACME_STAGING=1 while
+  # iterating on the ACME setup itself, where the rate limit matters more than
+  # the padlock.
+  if [[ -n "${ACME_STAGING:-}" ]]; then
+    TLS_ISSUER=letsencrypt-staging
+  else
+    TLS_ISSUER=letsencrypt-prod
+  fi
 elif [[ -n "${WITH_TLS:-}" ]]; then
   TLS_ENABLED=true
   TLS_ISSUER=selfsigned

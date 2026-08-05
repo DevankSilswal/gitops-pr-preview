@@ -1,5 +1,10 @@
 # GitOps Platform with PR Preview Environments
 
+**Live:** https://app.20-24-211-179.nip.io/api/info — the `main` branch, deployed by ArgoCD from a commit CI made to this repository.
+
+Open a pull request here and a second environment appears at `https://pr-<number>.20-24-211-179.nip.io` within about a minute, then disappears when the pull request closes.
+
+
 Every pull request automatically gets its own isolated, publicly reachable Kubernetes environment — created when the PR opens, updated on every push, and destroyed when the PR closes. Think Vercel/Netlify preview deploys, built from scratch on Kubernetes with ArgoCD.
 
 ## Why
@@ -88,7 +93,7 @@ The application in `app/` is deliberately trivial. It reports its own environmen
 - [x] **Phase 5 — Infrastructure as code.** Terraform for Azure and for Oracle Cloud, each provisioning one VM running k3s via cloud-init, plus a cloud-agnostic bootstrap script that takes only a GitHub owner and a node address.
 - [x] **Phase 6 — Lifecycle and operations.** Label-driven TTL expiry, preview URL posted as a pull request comment, optional Let's Encrypt TLS, a locked-down pod security context, and a Grafana dashboard covering the fleet.
 - [x] **Phase 7 — Proven end to end** against a live cluster. See below.
-- [ ] **Phase 8 — A public cluster.** The same manifests with a routable IP instead of `127.0.0.1`, which is also what makes ACME issuance testable.
+- [x] **Phase 8 — A public cluster.** Running on Azure with browser-trusted TLS. The manifests did not change; only the address did.
 
 ## What has actually been verified
 
@@ -113,6 +118,9 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | Cloud metadata is unreachable | A request to `169.254.169.254` from inside a preview pod timed out |
 | Quotas are enforced, not decorative | `ResourceQuota` reported live usage: `pods: 1/4`, `requests.cpu: 25m/500m` |
 | Images carry no fixable HIGH/CRITICAL | Trivy gates the build; the CRITICAL it originally found is gone |
+| It runs on a public cloud, not just locally | Azure VM in `eastasia`; the bootstrap script was unchanged, taking only an owner and an address |
+| Certificates are browser-trusted | Let's Encrypt production issued for both hostnames; `curl` without `-k` succeeds |
+| Releases reach production unattended | A commit pushed to `main` appeared at the live production URL with no deploy step |
 
 Four bugs were found only by running this, and are fixed:
 
@@ -121,10 +129,7 @@ Four bugs were found only by running this, and are fixed:
 3. nip.io reads `pr-1.127.0.0.1` as the address `1.127.0.0`, so every preview URL resolved somewhere else and timed out.
 4. Namespaces survived pruning, because `CreateNamespace=true` creates them outside the set ArgoCD tracks.
 
-Two things genuinely remain unproven, and both need a publicly reachable address:
-
-- **ACME issuance.** Let's Encrypt validates over HTTP-01 by connecting back to the hostname it is certifying, which cannot work against `127.0.0.1`. Everything downstream of the issuer is verified with a self-signed one; only the ACME exchange itself is not.
-- **The ingress service type.** A local cluster has no load balancer, so the controller binds host ports instead.
+Both of the gaps that needed a publicly reachable address are now closed. The platform runs on an Azure VM in `eastasia`, and both hostnames serve certificates issued by Let's Encrypt production — `curl` without `-k` succeeds, so a browser shows no warning.
 
 ## Try it locally
 
