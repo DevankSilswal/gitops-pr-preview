@@ -6,7 +6,7 @@ variable "subscription_id" {
 variable "location" {
   type        = string
   description = "Azure region"
-  default     = "centralindia"
+  default     = "eastasia"
 }
 
 variable "name" {
@@ -27,7 +27,7 @@ variable "name" {
 # choosing a smaller size does.
 variable "vm_size" {
   type    = string
-  default = "Standard_B2s"
+  default = "Standard_B2als_v2"
 }
 
 variable "admin_username" {

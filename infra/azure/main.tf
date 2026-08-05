@@ -128,5 +128,9 @@ resource "azurerm_linux_virtual_machine" "k3s" {
     version   = "latest"
   }
 
-  custom_data = base64encode(file("${path.module}/cloud-init.yaml"))
+  # The address is known before the machine boots because the public IP is
+  # allocated statically above, so k3s can sign its API certificate for it.
+  custom_data = base64encode(templatefile("${path.module}/cloud-init.yaml", {
+    public_ip = azurerm_public_ip.main.ip_address
+  }))
 }
