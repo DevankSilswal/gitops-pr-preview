@@ -200,3 +200,39 @@ az storage blob lease break -c tfstate -b azure.tfstate --account-name <storage-
 ```
 
 `terraform force-unlock <id>` does the same thing when the error reports an ID.
+
+## Rotating the GitHub token ArgoCD uses
+
+The pull request generator needs to read pull requests and nothing else. A
+token with `repo` scope — which is what `gh auth token` hands out — lets
+anything that reaches the cluster write to the repository, including its
+workflows. Use a fine-grained token instead.
+
+Create it at **github.com/settings/personal-access-tokens/new**:
+
+- **Repository access**: Only select repositories → this repository
+- **Repository permissions**: `Contents: Read-only` and
+  `Pull requests: Read-only`, nothing else. `Metadata: Read-only` selects
+  itself and cannot be removed; that is expected.
+
+Then put it in the cluster without it passing through a shell history or a
+chat window:
+
+```bash
+pbpaste | tr -d '\n' > /tmp/tok.txt        # macOS, straight from the clipboard
+kubectl -n argocd delete secret github-token
+kubectl -n argocd create secret generic github-token --from-file=token=/tmp/tok.txt
+rm /tmp/tok.txt
+```
+
+The trailing newline matters: leave it in and GitHub rejects every request with
+a 401, which surfaces as the ApplicationSet quietly generating nothing.
+
+Confirm it took:
+
+```bash
+kubectl logs -n argocd deploy/argocd-applicationset-controller --tail=20 | grep generated
+```
+
+It should report the number of pull requests currently carrying the `preview`
+label. Zero, when labelled pull requests exist, means the token is wrong.
