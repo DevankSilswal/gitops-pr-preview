@@ -26,6 +26,11 @@ permissions:
 env:
   # A preview environment expires after this many days without a push.
   TTL_DAYS: 3
+  # How many may exist at once. Per-namespace quotas stop one environment
+  # starving another, but nothing stops the tenth from exhausting a single
+  # node — this is where that bound lives, because the label is what admits an
+  # environment in the first place.
+  MAX_ENVIRONMENTS: 8
 
 jobs:
   grant:
@@ -39,6 +44,11 @@ jobs:
       # to the repository, which is precisely the supply-chain attack the
       # trigger is infamous for.
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          # A repository variable overrides the default, so the cap can be
+          # raised for a bigger node — or dropped to exercise the refusal path
+          # — without editing this file.
+          MAX_ENVIRONMENTS: ${{ vars.MAX_ENVIRONMENTS || env.MAX_ENVIRONMENTS }}
         with:
           script: |
             const pr = context.payload.pull_request;
@@ -65,9 +75,41 @@ jobs:
               return;
             }
 
+            // Refuse past the cap rather than letting the node decide by
+            // evicting somebody's environment mid-review.
+            // Number(undefined) is NaN and every comparison against it is
+            // false, so a missing value would disable the cap silently rather
+            // than loudly. Fail instead.
+            const max = Number(process.env.MAX_ENVIRONMENTS);
+            if (!Number.isInteger(max) || max < 1) {
+              core.setFailed(`MAX_ENVIRONMENTS must be a positive integer, got '${process.env.MAX_ENVIRONMENTS}'`);
+              return;
+            }
+            const open = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const active = open.filter((p) => p.labels.some((l) => l.name === 'preview'));
+
+            if (active.length >= max) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pr.number,
+                body: [
+                  `No preview environment yet — ${active.length} of ${max} are already running.`,
+                  '',
+                  'The cluster is a single node, so environments are capped rather',
+                  'than allowed to evict each other. One will free up when another',
+                  'pull request is closed or goes idle past its TTL, or you can add',
+                  'the `preview` label by hand to take a slot now.',
+                ].join('\n'),
+              });
+              core.info(`at capacity (${active.length}/${max}); no label granted for #${pr.number}`);
+              return;
+            }
+
             await github.rest.issues.addLabels({
               owner, repo, issue_number: pr.number, labels: ['preview'],
             });
+            core.info(`granted preview to #${pr.number} (${active.length + 1}/${max})`);
 
   expire:
     if: github.event_name != 'pull_request_target'
