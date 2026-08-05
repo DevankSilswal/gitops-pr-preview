@@ -75,13 +75,14 @@ jobs:
           grep -q 'containerPort: 8080' /tmp/other.yaml
           grep -q 'path: /healthz' /tmp/other.yaml
 
-      # The registry drives both what ArgoCD watches and what it may deploy
-      # from. A malformed entry should fail here, not halfway through a sync.
-      - name: Validate the onboarded-repositories registry
+      # ArgoCD reads deploy/platform/onboarded/ directly, so a malformed file
+      # would reach the cluster and show up as an environment that never
+      # appears. Onboarding is a pull request; this is what reviews it.
+      - name: Validate the onboarded repositories
         run: |
           for m in deploy/argocd/*.yaml; do
             PREVIEW_BASE_HOST=example.nip.io TLS_ENABLED=false TLS_ISSUER=selfsigned \
-              ./scripts/render-argocd.rb "$m" deploy/platform/onboarded-repos.yaml > /dev/null
+              ./scripts/render-argocd.rb "$m" > /dev/null
           done
 
       - name: Fail if the chart forgets the pull request identity

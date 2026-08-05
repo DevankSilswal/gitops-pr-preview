@@ -1,0 +1,11 @@
+# One file per onboarded repository.
+#
+# ArgoCD reads this directory directly with a git file generator, so adding a
+# file here is the whole of onboarding: no command to run against the cluster,
+# no re-bootstrap. Commit it and an environment appears on the next poll.
+slug: arcade
+owner: DevankSilswal
+repo: gitops-pr-preview
+image: ghcr.io/devanksilswal/preview-app
+port: "3000"
+healthPath: /api/health

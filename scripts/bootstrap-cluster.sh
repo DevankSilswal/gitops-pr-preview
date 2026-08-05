@@ -6,8 +6,9 @@
 #   export GITHUB_TOKEN=github_pat_...
 #   ./scripts/bootstrap-cluster.sh <node-public-ip>
 #
-# Which repositories get preview environments is not an argument here — it is
-# deploy/platform/onboarded-repos.yaml.
+# Which repositories get preview environments is not an argument, and not
+# something this script decides: ArgoCD reads deploy/platform/onboarded/ from
+# git. Onboarding one is a commit, not another run of this.
 #
 # Optional:
 #   ACME_EMAIL=you@example.com     also install cert-manager and TLS issuers
@@ -148,24 +149,23 @@ else
   TLS_ISSUER=selfsigned
 fi
 
-# The manifests are committed with placeholders, and the repository list lives
-# in one registry file, so nothing here carries account-specific values and the
-# set of repositories ArgoCD watches cannot drift from the set it is allowed to
-# deploy from. render-argocd.rb validates the registry and fails loudly rather
-# than emitting a manifest with a placeholder still in it.
+# Nothing about which repositories are served is baked in here: ArgoCD reads
+# deploy/platform/onboarded/ from git itself, so this script never has to run
+# again to onboard one. It only fills in what is true of the cluster — the base
+# hostname and the TLS issuer — and validates the onboarded files on the way
+# past, since a malformed one would otherwise show up as an environment that
+# never appears.
 export PREVIEW_BASE_HOST TLS_ENABLED TLS_ISSUER
 export PROD_IMAGE_TAG=latest
-
-REGISTRY="$REPO_ROOT/deploy/platform/onboarded-repos.yaml"
 
 # The project must exist before anything references it, and glob order would
 # otherwise apply it last.
 "$REPO_ROOT/scripts/render-argocd.rb" \
-  "$REPO_ROOT/deploy/argocd/appproject-previews.yaml" "$REGISTRY" | kubectl apply -f -
+  "$REPO_ROOT/deploy/argocd/appproject-previews.yaml" | kubectl apply -f -
 
 for manifest in "$REPO_ROOT"/deploy/argocd/*.yaml; do
   [[ "$manifest" == *appproject-previews.yaml ]] && continue
-  "$REPO_ROOT/scripts/render-argocd.rb" "$manifest" "$REGISTRY" | kubectl apply -f -
+  "$REPO_ROOT/scripts/render-argocd.rb" "$manifest" | kubectl apply -f -
 done
 
 cat <<EOF
@@ -173,7 +173,7 @@ cat <<EOF
 Done.
   ArgoCD UI:       kubectl port-forward svc/argocd-server -n argocd 8080:443
   Admin password:  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
-  Preview URLs:    http://pr-<number>.$PREVIEW_BASE_HOST
+  Preview URLs:    https://<slug>-pr-<number>.$PREVIEW_BASE_HOST
 
 Set PREVIEW_BASE_HOST to '$PREVIEW_BASE_HOST' in the repository variables so CI
 can post preview links on pull requests:

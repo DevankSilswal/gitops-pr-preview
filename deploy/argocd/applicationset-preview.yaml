@@ -1,11 +1,13 @@
 # One preview environment per open pull request, across every onboarded
 # repository.
 #
-# The generator is a matrix: the list of onboarded repositories crossed with
-# the pull requests open in each. That list comes from
-# deploy/platform/onboarded-repos.yaml and is rendered in by
-# scripts/bootstrap-cluster.sh, so onboarding a repository is an edit to that
-# file rather than a change to this one.
+# The generator is a matrix: every file in deploy/platform/onboarded/, crossed
+# with the pull requests open in the repository each one describes.
+#
+# ArgoCD reads that directory itself, so onboarding is a commit and nothing
+# more — no command against the cluster, no re-bootstrap, no edit to this file.
+# Removing a repository is deleting its file, and every environment it had goes
+# with it on the next poll.
 #
 # When a pull request is closed, or loses its label, the generator stops
 # emitting it, the controller deletes the Application, and the finalizer
@@ -23,9 +25,14 @@ spec:
   generators:
     - matrix:
         generators:
-          - list:
-              elements:
-__REPO_ELEMENTS__
+          - git:
+              repoURL: __CHART_REPO__
+              revision: __CHART_REVISION__
+              files:
+                - path: "deploy/platform/onboarded/*.yaml"
+              # Poll rather than wait for a webhook, so this works on a cluster
+              # GitHub cannot reach.
+              requeueAfterSeconds: 120
           - pullRequest:
               github:
                 owner: "{{owner}}"
