@@ -80,6 +80,8 @@ deploy/platform/observability/                 Prometheus values and Grafana das
 infra/azure/                            Terraform for an Azure VM running k3s
 infra/oracle/                           The same, on Oracle Cloud Always Free
 scripts/bootstrap-cluster.sh            One-shot cluster setup
+scripts/e2e-test.sh                     Preview environment tested on a real cluster
+docs/runbook.md                         Every failure this platform has actually produced
 ```
 
 The application in `app/` is deliberately trivial. It reports its own environment name, PR number, git SHA, and build time, so that opening a preview URL immediately proves *which* commit is running there. All of it arrives through environment variables set by CI and Kubernetes.
