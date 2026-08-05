@@ -1,0 +1,190 @@
+name: preview-build
+
+# Publishes the image a preview environment needs, for any repository.
+#
+# Adopting the platform should not mean reverse-engineering someone else's CI.
+# Everything the tag convention depends on lives here, so a repository opts in
+# with a few lines:
+#
+#   jobs:
+#     preview:
+#       uses: DevankSilswal/gitops-pr-preview/.github/workflows/preview-build.yml@main
+#       with:
+#         image-name: my-app
+#         context: .
+#       permissions:
+#         contents: read
+#         packages: write
+#         pull-requests: write
+#
+# This repository calls it too, so the path adopters take is the one exercised
+# on every commit here rather than a parallel copy left to rot.
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: 'Image name under ghcr.io/<owner>/'
+        required: true
+        type: string
+      context:
+        description: 'Build context directory'
+        required: false
+        default: '.'
+        type: string
+      dockerfile:
+        description: 'Dockerfile path, relative to the repository root'
+        required: false
+        default: ''
+        type: string
+      platforms:
+        description: 'Architectures to build for. The default covers both the ARM and x86 nodes this platform runs on.'
+        required: false
+        default: 'linux/amd64,linux/arm64'
+        type: string
+      slug:
+        description: 'The slug this repository is onboarded under, which is what the hostname is built from. Defaults to image-name; set it when they differ.'
+        required: false
+        default: ''
+        type: string
+      preview-base-host:
+        description: 'Base hostname of the cluster, e.g. 20-24-211-179.nip.io. Leave empty to skip the pull request comment.'
+        required: false
+        default: ''
+        type: string
+      scheme:
+        description: 'http or https, for the link in the comment'
+        required: false
+        default: 'https'
+        type: string
+      fail-on-vulnerabilities:
+        description: 'Fail the build on fixable HIGH or CRITICAL findings'
+        required: false
+        default: true
+        type: boolean
+    outputs:
+      image:
+        description: 'Full image repository that was published to'
+        value: ${{ jobs.build.outputs.image }}
+      tag:
+        description: 'Tag that was published'
+        value: ${{ jobs.build.outputs.tag }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # A fork's token cannot write packages, so the push would fail after
+    # several minutes of building. Skipping is honest — the caller's own tests
+    # still gate the pull request.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # On pull_request GitHub checks out a synthetic merge commit whose
+          # SHA nothing else knows about. ArgoCD deploys the pull request
+          # *head*, so build that same commit or the tag is never found.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Compute image tag and build metadata
+        id: meta
+        env:
+          REGISTRY: ghcr.io
+        run: |
+          set -euo pipefail
+
+          # Container registries reject uppercase in image names and GitHub
+          # usernames are frequently mixed case. Actions has no lower().
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=${REGISTRY}/${OWNER_LC}/${{ inputs.image-name }}" >> "$GITHUB_OUTPUT"
+
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # The ApplicationSet rebuilds this exact string from {{number}} and
+            # {{head_sha}}. Full SHAs on both sides, so nothing can truncate
+            # differently at either end.
+            echo "tag=pr-${{ github.event.number }}-${SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=main-${SHA}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile != '' && inputs.dockerfile || format('{0}/Dockerfile', inputs.context) }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          # Applications that want to report their own identity can read these;
+          # nothing breaks for one that ignores them.
+          build-args: |
+            GIT_SHA=${{ steps.meta.outputs.sha }}
+            BUILT_AT=${{ steps.meta.outputs.built_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Scanning after the push rather than before is deliberate: what gets
+      # scanned is then byte-for-byte what a preview environment will run.
+      - name: Scan the published image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: ${{ inputs.fail-on-vulnerabilities && '1' || '0' }}
+          format: table
+
+      - name: Summary
+        run: |
+          echo "Image \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # Tells the reviewer where to look. Edits one pinned comment rather than
+      # adding another per push, so a long-lived pull request stays readable.
+      - name: Post the preview URL on the pull request
+        if: github.event_name == 'pull_request' && inputs.preview-base-host != ''
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PREVIEW_URL: "${{ inputs.scheme }}://${{ inputs.slug != '' && inputs.slug || inputs.image-name }}-pr-${{ github.event.number }}.${{ inputs.preview-base-host }}"
+          IMAGE: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+        with:
+          script: |
+            const marker = '<!-- preview-environment -->';
+            const body = [
+              marker,
+              '### Preview environment',
+              '',
+              process.env.PREVIEW_URL,
+              '',
+              'Image `' + process.env.IMAGE + '`',
+              '',
+              'ArgoCD syncs within about a minute of this build finishing. The',
+              'environment is removed automatically when this pull request closes.',
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
