@@ -20,7 +20,7 @@ function buildInfo() {
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ state: 'ok' });
 });
 
 app.get('/api/info', (req, res) => {
