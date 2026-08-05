@@ -85,15 +85,19 @@ kubectl get resourcequota -n "$NS" -o name | grep -q . || fail "no ResourceQuota
 pass "ResourceQuota present"
 
 # --- traffic reaches it through the ingress, routed by Host ---------------
-for _ in $(seq 1 30); do
+# Wait for the expected body, not merely for a body. ingress-nginx answers
+# immediately with its own 404 page while the rule is still being programmed,
+# so a non-empty response proves nothing and made this test flaky: it passed
+# locally, where the controller was already warm, and failed in CI.
+BODY=""
+for _ in $(seq 1 40); do
   BODY=$(curl -s --max-time 5 -H "Host: $HOST" http://127.0.0.1/api/info 2>/dev/null || true)
-  [[ -n "$BODY" ]] && break
+  [[ "$BODY" == *'"prNumber":"1"'* ]] && break
   sleep 5
 done
-[[ -n "${BODY:-}" ]] || fail "ingress served nothing for Host: $HOST"
 
-echo "$BODY" | grep -q '"prNumber":"1"' || fail "wrong pull request identity: $BODY"
-echo "$BODY" | grep -q '"environment":"pr-1"' || fail "wrong environment name: $BODY"
+[[ "$BODY" == *'"prNumber":"1"'* ]] || fail "ingress never served this environment for Host: $HOST (last response: ${BODY:-<empty>})"
+[[ "$BODY" == *'"environment":"pr-1"'* ]] || fail "wrong environment name: $BODY"
 pass "ingress routes by Host and the app reports its own identity"
 
 # An unknown host must not fall through to this environment.
