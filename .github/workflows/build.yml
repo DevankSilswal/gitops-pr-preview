@@ -73,9 +73,13 @@ jobs:
           grep -q 'kind: Namespace' /tmp/rendered.yaml
 
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
-      - name: Validate the Terraform
-        run: terraform init -backend=false -input=false && terraform validate
-        working-directory: infra
+      - name: Validate the Terraform for every supported cloud
+        run: |
+          for dir in infra/*/; do
+            echo "== $dir"
+            terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+            terraform -chdir="$dir" validate
+          done
 
   build:
     # A failing test or an unrenderable chart must never produce an environment.
@@ -113,8 +117,11 @@ jobs:
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      # The cluster runs on Oracle's free Ampere A1 nodes, which are arm64.
-      # An amd64-only image would CrashLoopBackOff there.
+      # Built for both architectures because the target is not fixed: Azure's
+      # B-series VMs are amd64, Oracle's free Ampere nodes are arm64, and local
+      # development happens on Apple Silicon. A single-architecture image ties
+      # the platform to one host and fails as an ImagePullBackOff on the other,
+      # which is a confusing way to learn about it.
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -128,7 +135,7 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: app
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
           build-args: |
@@ -142,12 +149,6 @@ jobs:
       # will run, not a separately built copy of it.
       - name: Scan the published image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        env:
-          # The runner is amd64 and Trivy resolves that platform out of the
-          # image index by default, but this image is published for arm64 only
-          # to match the cluster nodes. Without this it reports the image as
-          # missing rather than scanning it.
-          TRIVY_PLATFORM: linux/arm64
         with:
           image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
           severity: HIGH,CRITICAL

@@ -50,7 +50,7 @@ A preview environment runs unreviewed code, and the chart it deploys is read fro
 
 | Piece | Choice | Reason |
 |---|---|---|
-| Cluster | k3s on Oracle Cloud Always Free | Real cluster, real public IPs, no time-limited trial credits |
+| Cluster | k3s on a single cloud VM | Nothing here needs managed Kubernetes, and one node keeps a student budget alive; Terraform exists for Azure and Oracle, and the rest of the platform does not know which one it is on |
 | GitOps | ArgoCD + ApplicationSet PR generator | The PR generator is what makes per-PR environments declarative rather than scripted |
 | CI | GitHub Actions | Builds and pushes images; never talks to the cluster directly |
 | Registry | GHCR | Free for public images, native GitHub auth |
@@ -68,11 +68,12 @@ app/                                    Sample service deployed into each enviro
 charts/preview-app/                     Helm chart, one release per environment
 deploy/argocd/applicationset-preview.yaml      Pull request generator — the core mechanism
 deploy/argocd/application-prod.yaml            main branch, same chart
-.github/workflows/build.yml             Test, arm64 build, GHCR push, PR comment
+.github/workflows/build.yml             Test, multi-arch build, GHCR push, PR comment, release
 .github/workflows/preview-lifecycle.yml Grants the preview label, expires it on TTL
 deploy/platform/cluster-issuers.yaml           Let's Encrypt issuers for preview TLS
 deploy/platform/observability/                 Prometheus values and Grafana dashboard
-infra/                                  Terraform for the Oracle Cloud VM and k3s
+infra/azure/                            Terraform for an Azure VM running k3s
+infra/oracle/                           The same, on Oracle Cloud Always Free
 scripts/bootstrap-cluster.sh            One-shot cluster setup
 ```
 
@@ -82,12 +83,12 @@ The application in `app/` is deliberately trivial. It reports its own environmen
 
 - [x] **Phase 1 — Sample application.** Express app exposing `/`, `/api/health`, `/api/info`; env-var-driven build identity; multi-stage Docker build on a non-root user; graceful SIGTERM shutdown; unit tests.
 - [x] **Phase 2 — Deployable unit.** Helm chart rendering a Deployment, Service and Ingress per environment, with probes on `/api/health`. Verified with `helm lint` / `helm template`.
-- [x] **Phase 3 — CI.** GitHub Actions runs the tests, then builds and pushes an `arm64` image to GHCR tagged `pr-<number>-<head-sha>`. CI holds no cluster credentials.
+- [x] **Phase 3 — CI.** GitHub Actions runs the tests, then builds and pushes an `amd64`/`arm64` image to GHCR tagged `pr-<number>-<head-sha>`. CI holds no cluster credentials; releasing to production is a commit to a values file that ArgoCD reads.
 - [x] **Phase 4 — GitOps definitions.** ApplicationSet PR generator and the production Application, both written and YAML-validated.
-- [x] **Phase 5 — Infrastructure as code.** Terraform for the Oracle Cloud VCN and Ampere A1 node, k3s via cloud-init, plus a one-shot cluster bootstrap script. `terraform validate` passes.
+- [x] **Phase 5 — Infrastructure as code.** Terraform for Azure and for Oracle Cloud, each provisioning one VM running k3s via cloud-init, plus a cloud-agnostic bootstrap script that takes only a GitHub owner and a node address.
 - [x] **Phase 6 — Lifecycle and operations.** Label-driven TTL expiry, preview URL posted as a pull request comment, optional Let's Encrypt TLS, a locked-down pod security context, and a Grafana dashboard covering the fleet.
 - [x] **Phase 7 — Proven end to end** against a live cluster. See below.
-- [ ] **Phase 8 — Oracle Cloud.** The same manifests with a public IP instead of `127.0.0.1`. Blocked only on free-tier ARM capacity.
+- [ ] **Phase 8 — A public cluster.** The same manifests with a routable IP instead of `127.0.0.1`, which is also what makes ACME issuance testable.
 
 ## What has actually been verified
 
@@ -136,6 +137,28 @@ gh pr edit <n> --add-label preview    # environment appears within ~60s
 curl http://pr-<n>.127-0-0-1.nip.io/api/info
 make dev-down
 ```
+
+## Deploying to a real cluster
+
+Terraform provisions one VM running k3s; the bootstrap script does not know or
+care which cloud it is on, taking only a GitHub owner and the node's address.
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/gitops -N ''
+
+terraform -chdir=infra/azure init
+terraform -chdir=infra/azure apply \
+  -var subscription_id=$(az account show --query id -o tsv) \
+  -var ssh_public_key="$(cat ~/.ssh/gitops.pub)"
+
+# point kubectl at it, then
+GITHUB_TOKEN=$(gh auth token) ./scripts/bootstrap-cluster.sh <owner> <public-ip>
+```
+
+On a student credit the VM, not the cluster, is what costs money. `make
+azure-stop` deallocates it between demonstrations, which stops compute charges
+while keeping the disk and the static IP — stopping the machine from inside the
+guest does not, because Azure keeps billing a VM it still has reserved.
 
 `make validate` runs everything checkable without a cluster: tests, chart lint in both TLS modes, and `terraform validate`.
 
