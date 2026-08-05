@@ -21,6 +21,11 @@ registry = YAML.safe_load(File.read(registry_path))
 repos = registry.fetch('repos', [])
 abort "no repositories listed in #{registry_path}" if repos.empty?
 
+platform = registry.fetch('platform', {})
+%w[chartRepo chartRevision chartPath].each do |key|
+  abort "#{registry_path}: platform.#{key} is required" if platform[key].to_s.strip.empty?
+end
+
 REQUIRED = %w[slug owner repo image port healthPath].freeze
 
 repos.each do |r|
@@ -57,14 +62,17 @@ elements = repos.map do |r|
   ].join("\n")
 end.join("\n")
 
-source_repos = repos
-               .map { |r| "    - https://github.com/#{r['owner']}/#{r['repo']}.git" }
-               .uniq
-               .join("\n")
+# Only the chart repository, because that is the only thing an Application
+# built here ever deploys from. Listing the onboarded repositories would permit
+# more than the platform actually does.
+source_repos = ["    - #{platform.fetch('chartRepo')}"].join("\n")
 
 out = File.read(manifest_path)
 out = out.gsub('__REPO_ELEMENTS__', elements)
 out = out.gsub('__SOURCE_REPOS__', source_repos)
+out = out.gsub('__CHART_REPO__', platform.fetch('chartRepo'))
+out = out.gsub('__CHART_REVISION__', platform.fetch('chartRevision'))
+out = out.gsub('__CHART_PATH__', platform.fetch('chartPath'))
 out = out.gsub('__PREVIEW_BASE_HOST__', ENV.fetch('PREVIEW_BASE_HOST', ''))
 out = out.gsub('__TLS_ENABLED__', ENV.fetch('TLS_ENABLED', 'false'))
 out = out.gsub('__TLS_ISSUER__', ENV.fetch('TLS_ISSUER', 'selfsigned'))

@@ -18,6 +18,23 @@
 # The platform's GitHub token must be able to read pull requests in every
 # repository listed here, or its environments silently never appear.
 
+# Where the chart comes from. Deliberately this repository and not the
+# onboarded one: an adopter should need a workflow call and four lines in the
+# registry, not a vendored copy of a Helm chart they then have to keep in sync.
+#
+# It also closes an escalation path. When the chart came from the pull request
+# under review, anyone able to open one could add a ClusterRoleBinding to it
+# and have ArgoCD apply it with ArgoCD's own privileges. Sourcing the chart
+# here means a pull request cannot influence its own deployment at all.
+#
+# The cost is real and worth stating: a pull request can no longer change how
+# it is deployed, only what is deployed. For a platform serving other people's
+# repositories that is the right way round.
+platform:
+  chartRepo: https://github.com/DevankSilswal/gitops-pr-preview.git
+  chartRevision: main
+  chartPath: charts/preview-app
+
 repos:
   - slug: arcade
     owner: DevankSilswal

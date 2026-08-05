@@ -55,11 +55,12 @@ __REPO_ELEMENTS__
     spec:
       project: previews
       source:
-        repoURL: "https://github.com/{{owner}}/{{repo}}.git"
-        # Deploy the chart as it exists on the pull request itself, so a pull
-        # request can change its own deployment config and see the result.
-        targetRevision: "{{head_sha}}"
-        path: charts/preview-app
+        # The chart comes from the platform, not from the repository under
+        # review. An adopter therefore vendors nothing, and a pull request
+        # cannot alter how it is deployed — only what is deployed.
+        repoURL: __CHART_REPO__
+        targetRevision: __CHART_REVISION__
+        path: __CHART_PATH__
         helm:
           parameters:
             - name: image.repository
