@@ -22,8 +22,9 @@ metadata:
 spec:
   description: Ephemeral per-pull-request environments
 
-  # Generated from deploy/platform/onboarded-repos.yaml, so the repositories a
-  # preview may deploy from cannot drift away from the ones actually onboarded.
+  # The chart repository, and only that: it is the only thing any Application
+  # generated here deploys from, since the chart no longer comes from the
+  # repository under review.
   sourceRepos:
 __SOURCE_REPOS__
 

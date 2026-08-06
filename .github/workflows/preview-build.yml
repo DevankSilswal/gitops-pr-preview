@@ -43,7 +43,10 @@ on:
         default: 'linux/amd64,linux/arm64'
         type: string
       slug:
-        description: 'The slug this repository is onboarded under, which is what the hostname is built from. Defaults to image-name; set it when they differ.'
+        description: >-
+          Override the slug this repository is onboarded under. Leave it alone:
+          the default is derived exactly as discovery derives it, so the link
+          this posts and the hostname that exists cannot disagree.
         required: false
         default: ''
         type: string
@@ -127,6 +130,23 @@ jobs:
           fi
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+          # Derived the same way scripts/discover-repos.rb derives it, from
+          # owner and repository. Passing a slug by hand is how this last broke:
+          # the comment advertised a hostname that had never existed, on the one
+          # feature the whole platform is for.
+          if [ -n "${{ inputs.slug }}" ]; then
+            SLUG="${{ inputs.slug }}"
+          else
+            SLUG=$(printf '%s' "${{ github.repository }}" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's#[^a-z0-9]+#-#g; s#^-+|-+$##g')
+            if [ ${#SLUG} -gt 45 ]; then
+              DIGEST=$(printf '%s' "$SLUG" | shasum -a 256 | cut -c1-6)
+              SLUG="${SLUG:0:38}-${DIGEST}"
+            fi
+          fi
+          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -244,7 +264,7 @@ jobs:
         if: github.event_name == 'pull_request' && inputs.preview-base-host != ''
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
-          PREVIEW_URL: "${{ inputs.scheme }}://${{ inputs.slug != '' && inputs.slug || inputs.image-name }}-pr-${{ github.event.number }}.${{ inputs.preview-base-host }}"
+          PREVIEW_URL: "${{ inputs.scheme }}://${{ steps.meta.outputs.slug }}-pr-${{ github.event.number }}.${{ inputs.preview-base-host }}"
           IMAGE: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
         with:
           script: |

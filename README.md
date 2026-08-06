@@ -2,7 +2,7 @@
 
 **Live:** https://app.20-24-211-179.nip.io — the `main` branch, deployed by ArgoCD from a commit CI made to this repository.
 
-Open a pull request here and a second environment appears at `https://arcade-pr-<number>.20-24-211-179.nip.io` within about a minute, then disappears when the pull request closes.
+Open a pull request here and a second environment appears at `https://devanksilswal-gitops-pr-preview-pr-<number>.20-24-211-179.nip.io` within about a minute, then disappears when the pull request closes.
 
 It is not tied to this repository, or to this cluster. A second one, [notes-board](https://github.com/DevankSilswal/notes-board) — Python, a different port, a different health path — is served by the same cluster with no platform code of its own.
 

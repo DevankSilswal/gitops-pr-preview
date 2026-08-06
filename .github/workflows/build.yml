@@ -99,6 +99,12 @@ jobs:
       - name: Syntax-check the scripts embedded in workflows
         run: ./scripts/check-workflow-scripts.sh
 
+      # The slug is derived in Ruby by discovery, which decides the hostname
+      # that exists, and in shell by the build workflow, which decides the one
+      # the comment advertises. They disagreed once and every link was wrong.
+      - name: Check the two slug derivations agree
+        run: ./scripts/check-slug-agreement.sh
+
       - name: Install promtool
         run: |
           set -euo pipefail
@@ -133,9 +139,6 @@ jobs:
     with:
       image-name: preview-app
       context: app
-      # The image is published as preview-app but onboarded under the slug
-      # arcade, and the hostname is built from the slug.
-      slug: arcade
       preview-base-host: ${{ vars.PREVIEW_BASE_HOST }}
       # preview-lifecycle.yml grants the label here, with a cap and a bot
       # check the reusable workflow cannot enforce from inside one repository.
