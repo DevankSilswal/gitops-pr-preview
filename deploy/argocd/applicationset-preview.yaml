@@ -30,9 +30,10 @@ spec:
               revision: __CHART_REVISION__
               files:
                 - path: "deploy/platform/onboarded/*.yaml"
-              # Poll rather than wait for a webhook, so this works on a cluster
-              # GitHub cannot reach.
-              requeueAfterSeconds: 120
+              # A fallback. GitHub pushes changes to the webhook endpoint, and
+              # this is what eventually notices when a push is missed — a lost
+              # webhook leaves no trace at all.
+              requeueAfterSeconds: 300
           - pullRequest:
               github:
                 owner: "{{owner}}"
@@ -46,8 +47,12 @@ spec:
                 tokenRef:
                   secretName: github-token
                   key: token
-              # How quickly a newly labelled pull request gets an environment.
-              requeueAfterSeconds: 60
+              # Also a fallback. With the webhook wired up an environment
+              # appears in seconds; without it, within this interval. Longer
+              # than it was, because ten repositories polling every minute is
+              # 600 API calls an hour against a limit of 5,000 — comfortable
+              # now, a ceiling later.
+              requeueAfterSeconds: 300
 
   template:
     metadata:

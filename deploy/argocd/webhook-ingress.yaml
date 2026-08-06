@@ -1,0 +1,45 @@
+# Lets GitHub tell ArgoCD a pull request changed, instead of ArgoCD asking.
+#
+# Polling has two costs. One is latency: up to a full interval of dead time
+# between opening a pull request and the environment existing. The other is
+# arithmetic — ten repositories on a sixty second interval is 600 API calls an
+# hour against a limit of 5,000, which is fine now and is a ceiling later.
+#
+# A webhook removes both. The poll stays as a fallback, at a longer interval,
+# because a webhook that is missed leaves no trace and something has to
+# eventually notice.
+#
+# Only /api/webhook is routed here. The rest of the ArgoCD API — which can
+# deploy anything anywhere — stays unreachable from the internet, and the
+# endpoint itself verifies GitHub's HMAC signature against a shared secret, so
+# routing it publicly does not make it callable.
+#
+# Placeholders are substituted at apply time by scripts/render-argocd.rb.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-webhook
+  namespace: argocd
+  annotations:
+    # argocd-server terminates TLS itself, so the ingress has to speak HTTPS to
+    # it rather than plain HTTP.
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    # A webhook body is small; anything larger is not GitHub.
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    __TLS_ANNOTATION__
+spec:
+  ingressClassName: nginx
+  __TLS_BLOCK__
+  rules:
+    - host: "argocd-webhook.__PREVIEW_BASE_HOST__"
+      http:
+        paths:
+          # Exactly this path. Not a prefix — a prefix here would expose the
+          # whole API under /api/.
+          - path: /api/webhook
+            pathType: Exact
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 443

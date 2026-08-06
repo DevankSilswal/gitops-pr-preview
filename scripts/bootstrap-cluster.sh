@@ -144,6 +144,17 @@ echo "==> Waiting for ArgoCD to come up"
 kubectl wait --for=condition=available --timeout=10m \
   deployment/argocd-server deployment/argocd-applicationset-controller -n argocd
 
+# Lets GitHub notify ArgoCD instead of ArgoCD asking every minute. The endpoint
+# verifies this signature, which is what makes exposing it safe.
+if [[ -n "${WEBHOOK_SECRET:-}" ]]; then
+  echo "==> Storing the webhook signing secret"
+  kubectl -n argocd patch secret argocd-secret \
+    --type merge \
+    -p "{\"stringData\":{\"webhook.github.secret\":\"${WEBHOOK_SECRET}\"}}" >/dev/null
+else
+  echo "==> No WEBHOOK_SECRET set — GitHub pushes will be rejected, polling still works"
+fi
+
 echo "==> Storing the GitHub token for the pull request generator"
 kubectl create secret generic github-token \
   --namespace argocd \
@@ -197,6 +208,7 @@ MANIFESTS=(
   appproject-previews.yaml   # referenced by the ApplicationSet below
   applicationset-preview.yaml
   application-prod.yaml
+  webhook-ingress.yaml       # lets GitHub push changes instead of ArgoCD polling
 )
 
 for name in "${MANIFESTS[@]}"; do

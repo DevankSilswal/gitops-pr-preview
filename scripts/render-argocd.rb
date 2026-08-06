@@ -72,7 +72,25 @@ out = out.gsub('__CHART_REPO__', platform.fetch('chartRepo'))
 out = out.gsub('__CHART_REVISION__', platform.fetch('chartRevision'))
 out = out.gsub('__CHART_PATH__', platform.fetch('chartPath'))
 out = out.gsub('__SOURCE_REPOS__', "    - #{platform.fetch('chartRepo')}")
-out = out.gsub('__PREVIEW_BASE_HOST__', ENV.fetch('PREVIEW_BASE_HOST', ''))
+base_host = ENV.fetch('PREVIEW_BASE_HOST', '')
+tls_on = ENV.fetch('TLS_ENABLED', 'false') == 'true'
+issuer = ENV.fetch('TLS_ISSUER', 'selfsigned')
+
+# Both substitutions have to leave valid YAML whether or not TLS is on, so the
+# "off" case is a comment rather than an empty line in the middle of a mapping.
+out = out.gsub(
+  '__TLS_ANNOTATION__',
+  tls_on ? "cert-manager.io/cluster-issuer: #{issuer.inspect}" : '# TLS disabled on this cluster',
+)
+out = out.gsub(
+  '__TLS_BLOCK__',
+  if tls_on
+    "tls:\n    - hosts:\n        - \"argocd-webhook.#{base_host}\"\n      secretName: argocd-webhook-tls"
+  else
+    '# TLS disabled on this cluster'
+  end,
+)
+out = out.gsub('__PREVIEW_BASE_HOST__', base_host)
 out = out.gsub('__TLS_ENABLED__', ENV.fetch('TLS_ENABLED', 'false'))
 out = out.gsub('__TLS_ISSUER__', ENV.fetch('TLS_ISSUER', 'selfsigned'))
 out = out.gsub('__PROD_IMAGE_TAG__', ENV.fetch('PROD_IMAGE_TAG', 'latest'))
