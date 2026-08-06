@@ -10,7 +10,10 @@
 # state could not be read back out of the repository, and ArgoCD would have no
 # way to tell that a release had happened.
 #
-# The placeholders below are filled in at apply time by
+# The repository and image are written out rather than templated from the
+# onboarded registry, because this is one specific deployment of one specific
+# application — not something the platform does generically. Only the cluster's
+# own base hostname and TLS issuer are filled in at apply time by
 # scripts/render-argocd.rb.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -22,7 +25,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/__OWNER__/gitops-pr-preview.git
+    repoURL: https://github.com/DevankSilswal/gitops-pr-preview.git
     targetRevision: main
     path: charts/preview-app
     helm:
@@ -30,7 +33,7 @@ spec:
         - values-production.yaml
       parameters:
         - name: image.repository
-          value: ghcr.io/__OWNER_LC__/preview-app
+          value: ghcr.io/devanksilswal/preview-app
         - name: ingress.host
           value: "app.__PREVIEW_BASE_HOST__"
         - name: ingress.tls.enabled
