@@ -92,6 +92,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Emulated arm64 builds are slow; this is generous, but not unbounded.
+    timeout-minutes: 45
     # A fork's token cannot write packages, so the push would fail after
     # several minutes of building. Skipping is honest — the caller's own tests
     # still gate the pull request.

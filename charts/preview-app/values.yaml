@@ -65,6 +65,14 @@ quota:
     cpu: "1"
     memory: 512Mi
 
+podSecurityAdmission:
+  enabled: true
+  # `restricted` is what the pods here already satisfy: non-root, no privilege
+  # escalation, all capabilities dropped, the RuntimeDefault seccomp profile.
+  # Enforcing it means the API server rejects anything that stops satisfying it
+  # rather than the chart quietly not asking.
+  level: restricted
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001

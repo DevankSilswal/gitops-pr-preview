@@ -12,6 +12,15 @@ metadata:
   name: {{ .Release.Namespace }}
   labels:
     {{- include "preview-app.labels" . | nindent 4 }}
+    {{- if .Values.podSecurityAdmission.enabled }}
+    # Enforced by the API server, not by the chart. The chart already sets a
+    # locked-down security context, but a chart is only a request — this is the
+    # cluster refusing anything that does not meet the baseline, including
+    # whatever a pull request might add to its own namespace later.
+    pod-security.kubernetes.io/enforce: {{ .Values.podSecurityAdmission.level }}
+    pod-security.kubernetes.io/audit: {{ .Values.podSecurityAdmission.level }}
+    pod-security.kubernetes.io/warn: {{ .Values.podSecurityAdmission.level }}
+    {{- end }}
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
 {{- end }}

@@ -36,6 +36,7 @@ jobs:
   grant:
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # This job runs on pull_request_target, which carries write permissions.
       # It therefore never checks out or executes the pull request's code — it
@@ -123,6 +124,7 @@ jobs:
   expire:
     if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
