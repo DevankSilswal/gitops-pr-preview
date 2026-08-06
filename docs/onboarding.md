@@ -48,6 +48,7 @@ jobs:
       contents: read
       packages: write
       pull-requests: write
+      deployments: write
     with:
       image-name: my-app
       context: .
@@ -55,8 +56,9 @@ jobs:
 ```
 
 That is the whole integration. It builds your image for both architectures,
-tags it the way the platform looks for, scans it, labels the pull request, and
-comments the preview URL.
+tags it the way the platform looks for, scans it, labels the pull request,
+waits for the environment to answer, and then records a deployment and comments
+the URL — checked, so the link works when a reviewer clicks it.
 
 Useful inputs: `dockerfile` if it is not `<context>/Dockerfile`, `slug` if your
 image name differs from the name you are onboarded under, and

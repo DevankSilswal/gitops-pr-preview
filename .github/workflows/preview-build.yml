@@ -50,6 +50,13 @@ on:
         required: false
         default: ''
         type: string
+      health-timeout-seconds:
+        description: >-
+          How long to wait for the environment to return 200 before commenting.
+          The link is still posted afterwards, marked as still starting.
+        required: false
+        default: 240
+        type: number
       preview-base-host:
         description: 'Base hostname of the cluster, e.g. 20-24-211-179.nip.io. Leave empty to skip the pull request comment.'
         required: false
@@ -260,27 +267,117 @@ jobs:
         run: |
           echo "Image \`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
 
+      # Wait for the environment to actually answer before advertising it.
+      #
+      # ArgoCD needs a minute to notice the label, and ingress-nginx replies
+      # with its own 404 page the moment a hostname exists but its route does
+      # not — so a link posted immediately is a link that does not work yet.
+      # This is the same mistake that made the end-to-end test flaky: treating
+      # "something responded" as "it is ready".
+      - name: Wait for the environment to answer
+        id: health
+        if: github.event_name == 'pull_request' && inputs.preview-base-host != ''
+        env:
+          URL: "${{ inputs.scheme }}://${{ steps.meta.outputs.slug }}-pr-${{ github.event.number }}.${{ inputs.preview-base-host }}"
+        run: |
+          set -uo pipefail
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+          deadline=$(( SECONDS + ${{ inputs.health-timeout-seconds }} ))
+          while [ $SECONDS -lt $deadline ]; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "ready=true" >> "$GITHUB_OUTPUT"
+              echo "answered 200 after ${SECONDS}s"
+              exit 0
+            fi
+            sleep 10
+          done
+
+          # Not a build failure: the image is published and correct, and ArgoCD
+          # may still be converging. The comment says so rather than lying.
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "no 200 within ${{ inputs.health-timeout-seconds }}s (last: $code)"
+
+      # A Deployment, so the environment appears in the pull request's own
+      # timeline and in the repository's Environments tab — with a native
+      # "View deployment" button and a history of what was deployed when.
+      # A comment is a message; this is the thing GitHub already models.
+      #
+      # transient_environment marks it as disposable, so GitHub retires the
+      # entry itself once the environment is gone.
+      - name: Record a deployment
+        if: github.event_name == 'pull_request' && inputs.preview-base-host != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          URL: ${{ steps.health.outputs.url }}
+          READY: ${{ steps.health.outputs.ready }}
+          ENVIRONMENT: "${{ steps.meta.outputs.slug }}-pr-${{ github.event.number }}"
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const ref = context.payload.pull_request.head.sha;
+
+            const deployment = await github.rest.repos.createDeployment({
+              owner, repo, ref,
+              environment: process.env.ENVIRONMENT,
+              transient_environment: true,
+              auto_merge: false,
+              // The checks that matter already ran; requiring them here would
+              // deadlock against the job creating the deployment.
+              required_contexts: [],
+              description: 'Preview environment',
+            });
+
+            if (!deployment.data.id) {
+              core.info('deployment not created: ' + JSON.stringify(deployment.data));
+              return;
+            }
+
+            await github.rest.repos.createDeploymentStatus({
+              owner, repo,
+              deployment_id: deployment.data.id,
+              state: process.env.READY === 'true' ? 'success' : 'in_progress',
+              environment_url: process.env.URL,
+              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              description: process.env.READY === 'true'
+                ? 'Environment is serving'
+                : 'Image published; ArgoCD is still converging',
+            });
+
       # Tells the reviewer where to look. Edits one pinned comment rather than
       # adding another per push, so a long-lived pull request stays readable.
       - name: Post the preview URL on the pull request
         if: github.event_name == 'pull_request' && inputs.preview-base-host != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          PREVIEW_URL: "${{ inputs.scheme }}://${{ steps.meta.outputs.slug }}-pr-${{ github.event.number }}.${{ inputs.preview-base-host }}"
+          PREVIEW_URL: ${{ steps.health.outputs.url }}
+          READY: ${{ steps.health.outputs.ready }}
           IMAGE: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
         with:
           script: |
             const marker = '<!-- preview-environment -->';
+            const ready = process.env.READY === 'true';
+
+            // Say which of the two it is. A link that has been checked and a
+            // link that has not are different things, and a reviewer clicking
+            // a dead one learns to distrust all of them.
             const body = [
               marker,
               '### Preview environment',
               '',
-              process.env.PREVIEW_URL,
+              ready
+                ? `${process.env.PREVIEW_URL} — responding`
+                : `${process.env.PREVIEW_URL} — not answering yet`,
+              '',
+              ready
+                ? 'Checked before posting: it returned 200.'
+                : 'The image is published and ArgoCD is still converging. Give it a minute; if it stays down, the environment could not start.',
               '',
               'Image `' + process.env.IMAGE + '`',
               '',
-              'ArgoCD syncs within about a minute of this build finishing. The',
-              'environment is removed automatically when this pull request closes.',
+              'Removed automatically when this pull request closes.',
             ].join('\n');
 
             const { owner, repo } = context.repo;
