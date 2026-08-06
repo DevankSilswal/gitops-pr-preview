@@ -196,7 +196,7 @@ jobs:
       # filling up.
       - name: Grant the preview label
         if: github.event_name == 'pull_request' && inputs.manage-label
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           MAX_ENVIRONMENTS: ${{ inputs.max-environments }}
         with:
@@ -262,7 +262,7 @@ jobs:
       # adding another per push, so a long-lived pull request stays readable.
       - name: Post the preview URL on the pull request
         if: github.event_name == 'pull_request' && inputs.preview-base-host != ''
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PREVIEW_URL: "${{ inputs.scheme }}://${{ steps.meta.outputs.slug }}-pr-${{ github.event.number }}.${{ inputs.preview-base-host }}"
           IMAGE: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
