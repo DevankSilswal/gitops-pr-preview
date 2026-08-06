@@ -73,7 +73,7 @@ A preview environment runs unreviewed code, in many cases from a repository this
 | Ingress | ingress-nginx | Routes every `<slug>-pr-<n>` hostname to the right namespace by Host header |
 | DNS | nip.io | Wildcard hostnames with no domain to buy or configure |
 | TLS | cert-manager + Let's Encrypt | Optional, staging issuer by default — preview hostnames churn past the production rate limit |
-| Observability | Prometheus + Grafana | Tracks active environments and what they cost — needs a node with four vCPUs; see below |
+| Observability | Prometheus, no operator | Alerts on environments that never become healthy. Grafana and the operator are opt-in — they need four vCPU, which this node does not have |
 
 CI builds artifacts; ArgoCD deploys them. The pipeline holds no cluster credentials — the cluster pulls its own desired state from git. That separation is the point of GitOps.
 
@@ -138,6 +138,7 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | Cloud metadata is unreachable | A request to `169.254.169.254` from inside a preview pod timed out |
 | Quotas are enforced, not decorative | `ResourceQuota` reported live usage: `pods: 1/4`, `requests.cpu: 25m/500m` |
 | Images carry no fixable HIGH/CRITICAL | Trivy gates the build; the CRITICAL it originally found is gone |
+| Alerts fire on real failures | A deliberately broken environment was created on the live cluster; Prometheus saw it and `PreviewImagePullFailing` went pending, then firing |
 | It runs on a public cloud, not just locally | Azure VM in `eastasia`; the bootstrap script was unchanged, taking only an owner and an address |
 | Certificates are browser-trusted | Let's Encrypt production issued for both hostnames; `curl` without `-k` succeeds |
 | Releases reach production unattended | A commit pushed to `main` appeared at the live production URL with no deploy step |

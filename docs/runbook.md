@@ -182,8 +182,10 @@ delete the namespace from the rebooted node before the pods reschedule:
 ssh ubuntu@<ip> "sudo k3s kubectl delete ns monitoring --wait=false"
 ```
 
-Observability needs four vCPUs or a node of its own. See the header of
-`deploy/platform/observability/values.yaml`.
+kube-prometheus-stack needs four vCPU or a node of its own. On a smaller node
+use `WITH_OBSERVABILITY=1`, which installs Prometheus without the operator or
+Grafana and holds load near idle; `WITH_OBSERVABILITY=full` is the heavy one.
+See the header of `deploy/platform/observability/values-lite.yaml`.
 
 ## Terraform says the state is locked
 
@@ -261,3 +263,27 @@ To recover: close stale pull requests, lower the TTL, offboard a repository by
 removing its file from `deploy/platform/onboarded/`, or give the node more
 CPU. Watch it with the `TooManyPreviewEnvironments` alert rather than by
 noticing.
+
+## The alerts are green and you do not believe them
+
+An alert that matches no series reports itself `inactive`, exactly as one that
+is watching something healthy does. That has happened here: the alerts were
+scoped to `pr-*` namespaces and namespaces became `<slug>-pr-<number>`.
+
+Check the expression matches anything at all:
+
+```bash
+kubectl port-forward -n monitoring svc/monitoring-prometheus-server 9090:80
+curl -s --data-urlencode 'query=count(kube_pod_info{namespace=~".+-pr-[0-9]+"})' \
+  localhost:9090/api/v1/query
+```
+
+`NO DATA` there means the alerts are watching nothing, whatever they say about
+themselves. To prove the path end to end, break something on purpose:
+
+```bash
+kubectl create ns broken-pr-1
+kubectl -n broken-pr-1 create deployment broken --image=example.com/nope:nope
+# PreviewImagePullFailing goes pending, then firing after ten minutes
+kubectl delete ns broken-pr-1
+```
