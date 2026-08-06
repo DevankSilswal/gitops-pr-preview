@@ -1,9 +1,9 @@
-FROM node:20-alpine AS deps
+FROM node:25-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-FROM node:20-alpine
+FROM node:25-alpine
 WORKDIR /app
 
 # Build-time identity, baked into the image by CI. Deploy-time values
