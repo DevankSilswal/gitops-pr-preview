@@ -1,0 +1,66 @@
+name: prune-images
+
+# Deletes preview images whose pull request is gone.
+#
+# Every push to a pull request publishes one. Nothing removed them, so the
+# registry accumulated an image per push indefinitely — the same leak as the
+# namespaces that survived pruning, in a different place and just as quiet,
+# because a registry filling up produces no symptom until it does.
+#
+# Deliberately conservative: it never touches untagged versions, which are the
+# per-architecture children of a multi-arch index and whose removal would leave
+# the tagged image pointing at manifests that no longer exist. It also refuses
+# to run if its own arithmetic would delete nearly everything.
+
+on:
+  schedule:
+    # Daily, well away from the discovery and lifecycle sweeps.
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List what would be deleted without deleting it'
+        type: boolean
+        required: false
+        default: true
+      retention_days:
+        description: 'Delete images older than this many days'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Find what production is pinned to
+        id: prod
+        run: |
+          set -euo pipefail
+          # Whatever production runs must survive, however old it is. Rolling
+          # back to an image that has been deleted is not a rollback.
+          TAG=$(grep -E '^  tag: ' charts/preview-app/values-production.yaml | awk '{print $2}')
+          test -n "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "protecting $TAG"
+
+      - name: Prune
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE: preview-app
+          PROTECT_TAG: ${{ steps.prod.outputs.tag }}
+          RETENTION_DAYS: ${{ inputs.retention_days != '' && inputs.retention_days || '30' }}
+        run: |
+          # Scheduled runs delete; a manual run defaults to showing what it
+          # would do, because this is the one job here that destroys things.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" != "false" ]; then
+            ./scripts/prune-images.rb --dry-run | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            ./scripts/prune-images.rb | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
