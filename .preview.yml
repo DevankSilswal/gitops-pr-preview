@@ -1,0 +1,8 @@
+# Opts this repository in to preview environments.
+#
+# This file plus the `pr-preview` topic on the repository is the whole of
+# joining: a scheduled job on the platform finds it and onboards you. Remove
+# either and your environments go away.
+port: 3000
+healthPath: /api/health
+image: preview-app
