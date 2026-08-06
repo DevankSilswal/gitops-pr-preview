@@ -5,11 +5,14 @@ DEMO_HOST ?= pr-1.127.0.0.1.nip.io
 KIND_CLUSTER := gitops-preview
 
 .DEFAULT_GOAL := help
-.PHONY: help test lint render validate tf-validate workflow-scripts alerts e2e bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
+.PHONY: help init test lint render validate tf-validate workflow-scripts alerts e2e bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk -F':.*?## ' '{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+init: ## Point a fresh fork at itself (run once, after forking)
+	./scripts/init-platform.sh
 
 test: ## Run the application test suite
 	cd app && npm ci --silent && npm test

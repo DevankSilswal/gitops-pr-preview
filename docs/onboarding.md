@@ -101,8 +101,23 @@ what is deployed — which is deliberate on a shared cluster.
 
 ## B. Run your own
 
-Terraform for Azure and Oracle Cloud is in [`infra/`](../infra). Either one
-builds a single VM running k3s.
+Fork this repository, then point it at itself:
+
+```bash
+make init
+git commit -am 'chore: point the platform at my fork'
+git push
+```
+
+That matters more than it looks. A fork carries the original author's details,
+and the consequential one is quiet: `deploy/platform/platform.yaml` decides
+where ArgoCD fetches the chart. Leave it and your cluster keeps pulling charts
+from somebody else's repository — which works, until they change it. `make
+init` rewrites that, replaces the example onboarding with one for your own
+repository, and repoints the production application.
+
+Then the infrastructure. Terraform for Azure and Oracle Cloud is in
+[`infra/`](../infra). Either one builds a single VM running k3s.
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/gitops -N ''

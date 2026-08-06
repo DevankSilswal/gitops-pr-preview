@@ -4,7 +4,15 @@
 
 Open a pull request here and a second environment appears at `https://arcade-pr-<number>.20-24-211-179.nip.io` within about a minute, then disappears when the pull request closes.
 
-It is not tied to this repository. A second one, [notes-board](https://github.com/DevankSilswal/notes-board) — Python, a different port, a different health path — is served by the same cluster with no platform code of its own: [how to onboard yours](docs/onboarding.md).
+It is not tied to this repository, or to this cluster. A second one, [notes-board](https://github.com/DevankSilswal/notes-board) — Python, a different port, a different health path — is served by the same cluster with no platform code of its own.
+
+**To use it on your own repository:** either [onboard it here](docs/onboarding.md#a-use-an-existing-cluster) — a workflow call and one small file — or fork this and run your own:
+
+```bash
+make init          # points the fork at itself
+make dev-cluster   # or infra/azure, or infra/oracle
+make dev-bootstrap
+```
 
 
 Every pull request automatically gets its own isolated, publicly reachable Kubernetes environment — created when the PR opens, updated on every push, and destroyed when the PR closes. Think Vercel/Netlify preview deploys, built from scratch on Kubernetes with ArgoCD.
