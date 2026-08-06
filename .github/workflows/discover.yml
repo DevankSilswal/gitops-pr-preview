@@ -1,0 +1,62 @@
+name: discover
+
+# Finds repositories that have opted in and commits their onboarding files.
+#
+# This is what makes the platform self-service. A repository joins by adding a
+# topic and .github/preview.yml; nobody is asked and nobody approves. This job
+# notices, writes the file ArgoCD reads, and commits it — and ArgoCD does the
+# rest without anything being run against the cluster.
+#
+# Leaving is symmetrical: remove the topic or the file, and the next run
+# removes the onboarding along with every environment that repository had.
+
+on:
+  schedule:
+    # Hourly. A newcomer waits at most an hour before their first environment,
+    # which is the price of not having a webhook from repositories this
+    # platform does not own.
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      max_repos:
+        description: 'Override how many repositories to serve'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Discover opted-in repositories
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIEW_TOPIC: ${{ vars.PREVIEW_TOPIC || 'pr-preview' }}
+          # Capacity is finite and the cluster is one node. Serving more
+          # repositories than it can hold does not fail politely — it fills the
+          # node and takes everyone's environments down together.
+          MAX_REPOS: ${{ inputs.max_repos != '' && inputs.max_repos || vars.MAX_REPOS || '20' }}
+        run: ./scripts/discover-repos.rb | tee "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit any change
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- deploy/platform/onboarded; then
+            echo "no change to the onboarded repositories"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/platform/onboarded
+          git commit -m "chore(discovery): update onboarded repositories"
+
+          # Rebase rather than fail: an hourly job racing a human push should
+          # not need someone to come and rerun it.
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push
