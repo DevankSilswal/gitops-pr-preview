@@ -166,14 +166,29 @@ If the label is there and the URL is not,
 [`docs/runbook.md`](runbook.md) lists every failure this platform has actually
 produced, starting from what each one looks like from the outside.
 
-## Known limits
+## Limits, and what happens when you reach them
 
-- **The cluster-wide cap is not enforced across repositories.** The lifecycle
-  workflow caps concurrent environments in the repository it runs in; it cannot
-  see other repositories. On a shared cluster the `TooManyPreviewEnvironments`
-  alert is what catches capacity filling up.
-- **TTL expiry is per-repository** for the same reason. An adopting repository
-  can add its own copy of `preview-lifecycle.yml` to get it.
-- **Pull requests from forks get no environment.** A fork's token cannot
-  publish images, and building fork code with a token that could would hand an
-  unreviewed branch the ability to push to the registry.
+**Your repository gets five environments at once** by default. Past that, a
+pull request is told so and waits for one to free up. Raise it with
+`max-environments` if the operator has capacity, or add the label by hand to
+take a slot.
+
+**The cluster serves ten repositories** by default. An eleventh is skipped,
+with the reason in the discovery run's summary.
+
+Those two multiply, and the product is what the node has to hold. A shared
+2-vCPU node holds roughly 58 environments requesting what the sample
+applications request — or four requesting the per-namespace ceiling. If your
+application is heavy, expect to be the one that fills it.
+
+**When it is full, new pods stay Pending.** The scheduler refuses new work
+rather than evicting a running environment, so a full cluster denies new
+environments instead of breaking existing ones.
+
+**TTL expiry is per-repository.** The platform cannot manage labels in a
+repository it does not own. Copy `preview-lifecycle.yml` into yours to get
+automatic expiry; without it, closing pull requests is what frees capacity.
+
+**Pull requests from forks get no environment.** A fork's token cannot publish
+images, and building fork code with a token that could would hand an unreviewed
+branch the ability to push to the registry.

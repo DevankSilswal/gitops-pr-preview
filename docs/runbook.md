@@ -236,3 +236,28 @@ kubectl logs -n argocd deploy/argocd-applicationset-controller --tail=20 | grep 
 
 It should report the number of pull requests currently carrying the `preview`
 label. Zero, when labelled pull requests exist, means the token is wrong.
+
+## New environments stay Pending
+
+```bash
+kubectl get pods -A --field-selector status.phase=Pending
+kubectl describe node <node> | grep -A6 'Allocated resources'
+```
+
+`Insufficient cpu` or `Insufficient memory` in the pod's events means the node
+is full. This is the intended failure: the scheduler refuses new work rather
+than evicting somebody's running environment.
+
+Capacity is bounded in two places, and the worst case is their product:
+
+- `MAX_REPOS` in the discover workflow — how many repositories are served
+- `max-environments` in the reusable build workflow — how many each may hold
+
+Both default low enough for applications that request what the samples do. One
+application requesting the per-namespace ceiling takes a quarter of a 2-vCPU
+node on its own, so a few of those will fill it whatever the counts say.
+
+To recover: close stale pull requests, lower the TTL, offboard a repository by
+removing its file from `deploy/platform/onboarded/`, or give the node more
+CPU. Watch it with the `TooManyPreviewEnvironments` alert rather than by
+noticing.

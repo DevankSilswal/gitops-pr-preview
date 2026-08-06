@@ -8,7 +8,15 @@
 #
 # Environment:
 #   PREVIEW_TOPIC   GitHub topic to search for (default: pr-preview)
-#   MAX_REPOS       how many to serve (default: 20)
+#   MAX_REPOS       how many to serve (default: 10)
+#
+# On capacity: the reusable build workflow caps environments per repository,
+# and this caps repositories, so the worst case is the product of the two. Size
+# them against the node. This one has 2 vCPU, which holds roughly 58
+# environments requesting what the sample applications request — or four
+# requesting the per-namespace ceiling. Ten repositories at five each fits the
+# first case and not the second; a heavy application meeting a full node gets
+# Pending pods rather than a broken cluster, which is the failure worth having.
 #   GH_TOKEN        used by the gh CLI
 #
 # Opting in is a topic on the repository plus .github/preview.yml. Nobody has
@@ -30,7 +38,7 @@ require 'open3'
 ROOT = File.expand_path('..', __dir__)
 ONBOARDED = File.join(ROOT, 'deploy/platform/onboarded')
 TOPIC = ENV.fetch('PREVIEW_TOPIC', 'pr-preview')
-MAX_REPOS = Integer(ENV.fetch('MAX_REPOS', '20'))
+MAX_REPOS = Integer(ENV.fetch('MAX_REPOS', '10'))
 CONFIG_PATH = '.github/preview.yml'
 
 def gh(*args)
