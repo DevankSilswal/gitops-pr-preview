@@ -37,19 +37,33 @@ def gh(*args)
   out
 end
 
-versions = JSON.parse(
-  gh('api', '--paginate', "user/packages/container/#{PACKAGE}/versions", '--slurp',
-     '--jq', '[.[][] | {id, created_at, tags: .metadata.container.tags}]'),
+# --paginate with --jq emits one object per line rather than one array, and
+# --slurp is not available everywhere. Parsing the lines works on every version
+# of gh and does not depend on a flag combination.
+def paginate(path, jq)
+  gh('api', '--paginate', path, '--jq', jq)
+    .each_line
+    .reject { |line| line.strip.empty? }
+    .map { |line| JSON.parse(line) }
+end
+
+versions = paginate(
+  "user/packages/container/#{PACKAGE}/versions?per_page=100",
+  '.[] | {id, created_at, tags: .metadata.container.tags}',
 )
 
 puts "#{versions.size} versions in ghcr.io/#{OWNER.downcase}/#{PACKAGE}"
 
 # Which pull requests still exist, and which are closed.
 pr_state = {}
-JSON.parse(
-  gh('api', '--paginate', "repos/#{OWNER}/#{REPO}/pulls?state=all&per_page=100", '--slurp',
-     '--jq', '[.[][] | {number, state}]'),
+paginate(
+  "repos/#{OWNER}/#{REPO}/pulls?state=all&per_page=100",
+  '.[] | {number, state}',
 ).each { |pr| pr_state[pr['number']] = pr['state'] }
+
+# Deleting on the basis of an empty pull request list would remove every
+# preview image at once.
+abort 'no pull requests returned — refusing to decide anything from that' if pr_state.empty?
 
 cutoff = Time.now - (RETENTION_DAYS * 24 * 60 * 60)
 doomed = []

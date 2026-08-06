@@ -57,6 +57,10 @@ jobs:
           PROTECT_TAG: ${{ steps.prod.outputs.tag }}
           RETENTION_DAYS: ${{ inputs.retention_days != '' && inputs.retention_days || '30' }}
         run: |
+          # pipefail, because piping into tee otherwise reports the exit status
+          # of tee. A failing prune looked like a successful one.
+          set -euo pipefail
+
           # Scheduled runs delete; a manual run defaults to showing what it
           # would do, because this is the one job here that destroys things.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" != "false" ]; then
