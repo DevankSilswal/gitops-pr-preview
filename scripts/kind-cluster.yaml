@@ -3,8 +3,8 @@
 # Ports 80 and 443 are mapped straight to the host so that nip.io hostnames
 # resolve the same way they do in production: pr-1.127.0.0.1.nip.io reaches
 # 127.0.0.1, which is this node. That keeps preview URLs identical in shape
-# locally and on Oracle Cloud, so the ingress configuration is exercised for
-# real rather than being bypassed with port-forwarding.
+# locally and in the cloud, so the ingress configuration is exercised for real
+# rather than being bypassed with port-forwarding.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:

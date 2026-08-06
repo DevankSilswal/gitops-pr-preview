@@ -10,7 +10,7 @@ It is not tied to this repository, or to this cluster. A second one, [notes-boar
 
 ```bash
 make init          # points the fork at itself
-make dev-cluster   # or infra/azure, or infra/oracle
+make dev-cluster   # locally, or infra/azure for a cloud VM
 make dev-bootstrap
 ```
 
@@ -66,7 +66,7 @@ A preview environment runs unreviewed code, in many cases from a repository this
 
 | Piece | Choice | Reason |
 |---|---|---|
-| Cluster | k3s on a single cloud VM | Nothing here needs managed Kubernetes, and one node keeps a student budget alive; Terraform exists for Azure and Oracle, and the rest of the platform does not know which one it is on |
+| Cluster | k3s on a single Azure VM | Nothing here needs managed Kubernetes, and one node keeps a student budget alive. The bootstrap script takes only a node address, so nothing above it knows which cloud it is on |
 | GitOps | ArgoCD + ApplicationSet PR generator | The PR generator is what makes per-PR environments declarative rather than scripted |
 | CI | GitHub Actions | Builds and pushes images; never talks to the cluster directly |
 | Registry | GHCR | Free for public images, native GitHub auth |
@@ -91,8 +91,7 @@ deploy/argocd/application-prod.yaml            main branch, same chart
 .github/workflows/preview-lifecycle.yml Grants the preview label, expires it on TTL
 deploy/platform/cluster-issuers.yaml           Let's Encrypt issuers for preview TLS
 deploy/platform/observability/                 Prometheus values and Grafana dashboard
-infra/azure/                            Terraform for an Azure VM running k3s
-infra/oracle/                           The same, on Oracle Cloud Always Free
+infra/azure/                            Terraform for the Azure VM running k3s
 scripts/bootstrap-cluster.sh            One-shot cluster setup
 scripts/e2e-test.sh                     Preview environment tested on a real cluster
 docs/onboarding.md                      How another repository adopts this
@@ -107,7 +106,7 @@ The application in `app/` is deliberately trivial. It reports its own environmen
 - [x] **Phase 2 — Deployable unit.** Helm chart rendering a Deployment, Service and Ingress per environment, with probes on `/api/health`. Verified with `helm lint` / `helm template`.
 - [x] **Phase 3 — CI.** GitHub Actions runs the tests, then builds and pushes an `amd64`/`arm64` image to GHCR tagged `pr-<number>-<head-sha>`. CI holds no cluster credentials; releasing to production is a commit to a values file that ArgoCD reads.
 - [x] **Phase 4 — GitOps definitions.** ApplicationSet PR generator and the production Application, both written and YAML-validated.
-- [x] **Phase 5 — Infrastructure as code.** Terraform for Azure and for Oracle Cloud, each provisioning one VM running k3s via cloud-init, plus a cloud-agnostic bootstrap script that takes only a node address.
+- [x] **Phase 5 — Infrastructure as code.** Terraform provisioning one Azure VM running k3s via cloud-init, plus a bootstrap script that takes only a node address and so does not know which cloud it is on.
 - [x] **Phase 6 — Lifecycle and operations.** Label-driven TTL expiry, preview URL posted as a pull request comment, optional Let's Encrypt TLS, a locked-down pod security context, and a Grafana dashboard covering the fleet.
 - [x] **Phase 7 — Proven end to end** against a live cluster. See below.
 - [x] **Phase 8 — A public cluster.** Running on Azure with browser-trusted TLS. The manifests did not change; only the address did.

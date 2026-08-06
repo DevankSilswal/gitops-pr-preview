@@ -119,8 +119,8 @@ from somebody else's repository — which works, until they change it. `make
 init` rewrites that, replaces the example onboarding with one for your own
 repository, and repoints the production application.
 
-Then the infrastructure. Terraform for Azure and Oracle Cloud is in
-[`infra/`](../infra). Either one builds a single VM running k3s.
+Then the infrastructure. [`infra/azure/`](../infra/azure) builds a single VM
+running k3s.
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/gitops -N ''
