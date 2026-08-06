@@ -91,15 +91,44 @@ else
 fi
 
 if [[ -n "${WITH_OBSERVABILITY:-}" ]]; then
-  echo "==> Installing Prometheus and Grafana"
-  helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-    --namespace monitoring --create-namespace \
-    --values "$REPO_ROOT/deploy/platform/observability/values.yaml" \
-    --wait --timeout 15m
-  kubectl apply -f "$REPO_ROOT/deploy/platform/observability/dashboard.yaml"
-  kubectl apply -f "$REPO_ROOT/deploy/platform/observability/alerts.yaml"
+  # Two shapes, because one of them does not fit on a small node.
+  #
+  # `full` is kube-prometheus-stack: operator, CRDs, Grafana, dashboards.
+  # It was tried twice on this 2-vCPU node and took it down both times —
+  # load past 9, API server unresponsive, preview URLs dead. Four vCPU or
+  # a node of its own.
+  #
+  # `lite` is Prometheus with kube-state-metrics and node-exporter, no
+  # operator and no Grafana. The same alerts, read in Prometheus's own UI.
+  if [[ "${WITH_OBSERVABILITY}" == "full" ]]; then
+    echo "==> Installing Prometheus and Grafana (needs four vCPU)"
+    helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+      --namespace monitoring --create-namespace \
+      --values "$REPO_ROOT/deploy/platform/observability/values.yaml" \
+      --wait --timeout 15m
+    kubectl apply -f "$REPO_ROOT/deploy/platform/observability/dashboard.yaml"
+    kubectl apply -f "$REPO_ROOT/deploy/platform/observability/alerts.yaml"
+  else
+    echo "==> Installing Prometheus (no operator, no Grafana)"
+    # The alerts live in a PrometheusRule, which is the operator's format.
+    # Without the operator they have to be handed over as a plain rules
+    # file — extracted from the same source rather than written twice.
+    RULES="$(mktemp)"
+    trap 'rm -f "$RULES"' EXIT
+    ruby -ryaml -e '
+      doc = YAML.safe_load(File.read(ARGV[0]))
+      print({ "serverFiles" => { "alerting_rules.yml" =>
+        { "groups" => doc.fetch("spec").fetch("groups") } } }.to_yaml)
+    ' "$REPO_ROOT/deploy/platform/observability/alerts.yaml" > "$RULES"
+
+    helm upgrade --install monitoring prometheus-community/prometheus \
+      --namespace monitoring --create-namespace \
+      --values "$REPO_ROOT/deploy/platform/observability/values-lite.yaml" \
+      --values "$RULES" \
+      --wait --timeout 12m
+  fi
 else
-  echo "==> Skipping observability (set WITH_OBSERVABILITY=1 to enable)"
+  echo "==> Skipping observability (WITH_OBSERVABILITY=1 for lite, =full for Grafana)"
 fi
 
 echo "==> Installing ArgoCD"

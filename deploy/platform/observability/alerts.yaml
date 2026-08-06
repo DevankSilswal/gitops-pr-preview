@@ -6,8 +6,14 @@
 # never passes its probes, and an environment that quietly outstays its
 # namespace quota.
 #
-# Everything is scoped to pr-* namespaces. Production has different
-# expectations and should not share thresholds with throwaway environments.
+# Everything is scoped to preview namespaces, which are named
+# <slug>-pr-<number>. The pattern matched `pr-*` until the slug was introduced,
+# after which it matched nothing at all — the alerts still loaded, still
+# evaluated, and still reported themselves inactive, which is the worst way for
+# monitoring to fail. The unit tests use namespaces of the real shape now.
+#
+# Production is excluded deliberately: it has different expectations and should
+# not share thresholds with throwaway environments.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -27,7 +33,7 @@ spec:
           expr: |
             max by (namespace, pod) (
               kube_pod_container_status_waiting_reason{
-                namespace=~"pr-.*",
+                namespace=~".+-pr-[0-9]+",
                 reason=~"ImagePullBackOff|ErrImagePull"
               }
             ) == 1
@@ -46,7 +52,7 @@ spec:
         - alert: PreviewNeverBecameReady
           expr: |
             max by (namespace, pod) (
-              kube_pod_status_ready{namespace=~"pr-.*", condition="true"}
+              kube_pod_status_ready{namespace=~".+-pr-[0-9]+", condition="true"}
             ) == 0
           for: 15m
           labels:
@@ -60,7 +66,7 @@ spec:
         - alert: PreviewCrashLooping
           expr: |
             increase(
-              kube_pod_container_status_restarts_total{namespace=~"pr-.*"}[15m]
+              kube_pod_container_status_restarts_total{namespace=~".+-pr-[0-9]+"}[15m]
             ) > 3
           for: 5m
           labels:
@@ -74,9 +80,9 @@ spec:
         - alert: PreviewNearingQuota
           expr: |
             max by (namespace, resource) (
-              kube_resourcequota{namespace=~"pr-.*", type="used"}
+              kube_resourcequota{namespace=~".+-pr-[0-9]+", type="used"}
               / ignoring(type) group_left
-              kube_resourcequota{namespace=~"pr-.*", type="hard"}
+              kube_resourcequota{namespace=~".+-pr-[0-9]+", type="hard"}
             ) > 0.9
           for: 10m
           labels:
@@ -88,7 +94,7 @@ spec:
         # The fleet as a whole, rather than any one environment. If this is
         # firing, the node is the constraint and old environments need expiring.
         - alert: TooManyPreviewEnvironments
-          expr: count(count by (namespace) (kube_pod_info{namespace=~"pr-.*"})) > 8
+          expr: count(count by (namespace) (kube_pod_info{namespace=~".+-pr-[0-9]+"})) > 8
           for: 15m
           labels:
             severity: warning

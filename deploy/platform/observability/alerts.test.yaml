@@ -17,7 +17,7 @@ tests:
   - interval: 1m
     name: an image that cannot be pulled alerts, but only after ten minutes
     input_series:
-      - series: 'kube_pod_container_status_waiting_reason{namespace="pr-42",pod="preview-pr-42-preview-app-abc",container="app",reason="ImagePullBackOff"}'
+      - series: 'kube_pod_container_status_waiting_reason{namespace="acme-app-pr-42",pod="preview-pr-42-preview-app-abc",container="app",reason="ImagePullBackOff"}'
         values: "1x20"
     alert_rule_test:
       # A build in progress must not page anyone.
@@ -29,10 +29,10 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              namespace: pr-42
+              namespace: acme-app-pr-42
               pod: preview-pr-42-preview-app-abc
             exp_annotations:
-              summary: "Preview environment pr-42 cannot pull its image"
+              summary: "Preview environment acme-app-pr-42 cannot pull its image"
               description: >-
                 preview-pr-42-preview-app-abc has been unable to pull its image for ten minutes. Either the build has not published that tag, or the tag the ApplicationSet asked for does not match the one CI produced.
 
@@ -51,7 +51,7 @@ tests:
   - interval: 1m
     name: a pod that runs but never passes its probe alerts
     input_series:
-      - series: 'kube_pod_status_ready{namespace="pr-7",pod="preview-pr-7-preview-app-xyz",condition="true"}'
+      - series: 'kube_pod_status_ready{namespace="acme-app-pr-7",pod="preview-pr-7-preview-app-xyz",condition="true"}'
         values: "0x25"
     alert_rule_test:
       - eval_time: 20m
@@ -59,17 +59,17 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              namespace: pr-7
+              namespace: acme-app-pr-7
               pod: preview-pr-7-preview-app-xyz
             exp_annotations:
-              summary: "Preview environment pr-7 is not ready"
+              summary: "Preview environment acme-app-pr-7 is not ready"
               description: >-
                 preview-pr-7-preview-app-xyz has been running without passing its readiness probe for fifteen minutes, so its URL is serving nothing.
 
   - interval: 1m
     name: a healthy environment stays quiet
     input_series:
-      - series: 'kube_pod_status_ready{namespace="pr-8",pod="preview-pr-8-preview-app-ok",condition="true"}'
+      - series: 'kube_pod_status_ready{namespace="acme-app-pr-8",pod="preview-pr-8-preview-app-ok",condition="true"}'
         values: "1x25"
     alert_rule_test:
       - eval_time: 20m
@@ -80,7 +80,7 @@ tests:
   - interval: 1m
     name: repeated restarts alert
     input_series:
-      - series: 'kube_pod_container_status_restarts_total{namespace="pr-9",pod="preview-pr-9-preview-app-crash",container="app"}'
+      - series: 'kube_pod_container_status_restarts_total{namespace="acme-app-pr-9",pod="preview-pr-9-preview-app-crash",container="app"}'
         values: "0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20"
     alert_rule_test:
       - eval_time: 20m
@@ -88,34 +88,34 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              namespace: pr-9
+              namespace: acme-app-pr-9
               pod: preview-pr-9-preview-app-crash
               container: app
             exp_annotations:
-              summary: "Preview environment pr-9 is crash looping"
+              summary: "Preview environment acme-app-pr-9 is crash looping"
               description: "preview-pr-9-preview-app-crash has restarted more than three times in fifteen minutes."
 
   # ----------------------------------------------------------------- fleet ---
   - interval: 1m
     name: more environments than the node was sized for alerts
     input_series:
-      - series: 'kube_pod_info{namespace="pr-1",pod="a"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-1",pod="a"}'
         values: "1x25"
-      - series: 'kube_pod_info{namespace="pr-2",pod="b"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-2",pod="b"}'
         values: "1x25"
-      - series: 'kube_pod_info{namespace="pr-3",pod="c"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-3",pod="c"}'
         values: "1x25"
-      - series: 'kube_pod_info{namespace="pr-4",pod="d"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-4",pod="d"}'
         values: "1x25"
-      - series: 'kube_pod_info{namespace="pr-5",pod="e"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-5",pod="e"}'
         values: "1x25"
-      - series: 'kube_pod_info{namespace="pr-6",pod="f"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-6",pod="f"}'
         values: "1x25"
-      - series: 'kube_pod_info{namespace="pr-7",pod="g"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-7",pod="g"}'
         values: "1x25"
-      - series: 'kube_pod_info{namespace="pr-8",pod="h"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-8",pod="h"}'
         values: "1x25"
-      - series: 'kube_pod_info{namespace="pr-9",pod="i"}'
+      - series: 'kube_pod_info{namespace="acme-app-pr-9",pod="i"}'
         values: "1x25"
     alert_rule_test:
       - eval_time: 20m

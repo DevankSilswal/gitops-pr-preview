@@ -1,0 +1,76 @@
+# Prometheus without the operator, sized to actually fit on two vCPU.
+#
+# kube-prometheus-stack was tried twice here and failed the same way both
+# times: load average past 9 on a 2-vCPU node, the API server unable to answer
+# its own health checks, and the live preview URLs down until the namespace was
+# deleted. Nothing was OOMKilled either time — it is CPU, and no amount of
+# trimming memory limits changes that.
+#
+# What costs the CPU is mostly not Prometheus. It is the operator reconciling
+# CRDs, and Grafana, which is slow to start and expensive to keep alive. Drop
+# both and what remains — a scrape loop, kube-state-metrics and node-exporter —
+# is affordable.
+#
+# The trade is real: no Grafana. Alerts and queries are read in Prometheus's
+# own UI, which is enough to answer "is anything broken" and not enough to hand
+# somebody a dashboard. The dashboard in dashboard.yaml stays for a cluster
+# with room for Grafana.
+
+alertmanager:
+  # Another component to route alerts to a destination this project does not
+  # have. They are read in the UI.
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+kube-state-metrics:
+  # Every alert here is built on this: pod phases, container waiting reasons,
+  # restart counts and quota usage all come from it.
+  resources:
+    requests:
+      cpu: 10m
+      memory: 48Mi
+    limits:
+      memory: 160Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      memory: 64Mi
+
+server:
+  # Preview environments are short-lived, so a long window mostly retains
+  # series for namespaces that no longer exist.
+  retention: 2d
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      # A ceiling rather than a target. Prometheus grows with series count, and
+      # this node cannot afford it to grow far.
+      memory: 640Mi
+
+  persistentVolume:
+    size: 4Gi
+
+  # Prometheus reloads slowly on a busy node; the defaults kill it mid-start
+  # and it never finishes. This is the same mistake that put Grafana into a
+  # crash loop here.
+  readinessProbeInitialDelay: 60
+  readinessProbeTimeout: 15
+  readinessProbeFailureThreshold: 10
+  livenessProbeInitialDelay: 120
+  livenessProbeTimeout: 30
+  livenessProbeFailureThreshold: 10
+
+  global:
+    # Twice the default. Preview environments are not latency-sensitive, and
+    # halving the scrape rate halves the steady-state cost of watching them.
+    scrape_interval: 60s
+    evaluation_interval: 60s
