@@ -4,7 +4,11 @@
 # already pointing at it.
 #
 #   export GITHUB_TOKEN=github_pat_...
-#   ./scripts/bootstrap-cluster.sh <github-owner> <node-public-ip>
+#   ./scripts/bootstrap-cluster.sh <node-public-ip>
+#
+# Which repositories get preview environments is not an argument, and not
+# something this script decides: ArgoCD reads deploy/platform/onboarded/ from
+# git. Onboarding one is a commit, not another run of this.
 #
 # Optional:
 #   ACME_EMAIL=you@example.com     also install cert-manager and TLS issuers
@@ -16,12 +20,11 @@
 
 set -euo pipefail
 
-OWNER="${1:-}"
-NODE_IP="${2:-}"
+NODE_IP="${1:-}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ -z "$OWNER" || -z "$NODE_IP" ]]; then
-  echo "usage: $0 <github-owner> <node-public-ip>" >&2
+if [[ -z "$NODE_IP" ]]; then
+  echo "usage: $0 <node-public-ip>" >&2
   exit 1
 fi
 
@@ -118,10 +121,7 @@ kubectl create secret generic github-token \
   --from-literal=token="$GITHUB_TOKEN" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-echo "==> Applying ArgoCD manifests for owner=$OWNER node=$NODE_IP"
-# GHCR paths must be lowercase even when the GitHub username is not.
-OWNER_LC=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-
+echo "==> Applying ArgoCD manifests for node=$NODE_IP"
 # nip.io splits on dashes as well as dots when it looks for an address, so a
 # dotted IP after a label like `pr-1` is misread: pr-1.127.0.0.1.nip.io
 # resolves to 1.127.0.0. Writing the address in dash form removes the
@@ -149,31 +149,41 @@ else
   TLS_ISSUER=selfsigned
 fi
 
-# The manifests are committed with placeholders so the repo carries no
-# account-specific values; they are substituted at apply time.
-render() {
-  sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
-      -e "s|__OWNER__|$OWNER|g" \
-      -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
-      -e "s|__TLS_ENABLED__|$TLS_ENABLED|g" \
-      -e "s|__TLS_ISSUER__|$TLS_ISSUER|g" \
-      -e "s|__PROD_IMAGE_TAG__|latest|g" \
-      "$1"
-}
+# Nothing about which repositories are served is baked in here: ArgoCD reads
+# deploy/platform/onboarded/ from git itself, so this script never has to run
+# again to onboard one. It only fills in what is true of the cluster — the base
+# hostname and the TLS issuer — and validates the onboarded files on the way
+# past, since a malformed one would otherwise show up as an environment that
+# never appears.
+export PREVIEW_BASE_HOST TLS_ENABLED TLS_ISSUER
+export PROD_IMAGE_TAG=latest
 
-# The project must exist before anything references it, and glob order would
-# otherwise apply it last.
-render "$REPO_ROOT/deploy/argocd/appproject-previews.yaml" | kubectl apply -f -
+# Applied in a stated order rather than whatever the glob happens to produce.
+# The project has to exist before anything references it — and alphabetically
+# the ApplicationSet, which is the whole point of this script, came last. One
+# failure earlier in the glob took the script down with it and left the cluster
+# running the previous ApplicationSet, looking for all the world like the new
+# one had been applied.
+MANIFESTS=(
+  appproject-previews.yaml   # referenced by the ApplicationSet below
+  applicationset-preview.yaml
+  application-prod.yaml
+)
 
+for name in "${MANIFESTS[@]}"; do
+  echo "  applying $name"
+  "$REPO_ROOT/scripts/render-argocd.rb" "$REPO_ROOT/deploy/argocd/$name" | kubectl apply -f -
+done
+
+# Anything added to deploy/argocd/ and not listed above would be silently
+# skipped, which is the same class of mistake in the other direction.
 for manifest in "$REPO_ROOT"/deploy/argocd/*.yaml; do
-  [[ "$manifest" == *appproject-previews.yaml ]] && continue
-  sed -e "s|__OWNER_LC__|$OWNER_LC|g" \
-      -e "s|__OWNER__|$OWNER|g" \
-      -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
-      -e "s|__TLS_ENABLED__|$TLS_ENABLED|g" \
-      -e "s|__TLS_ISSUER__|$TLS_ISSUER|g" \
-      -e "s|__PROD_IMAGE_TAG__|latest|g" \
-      "$manifest" | kubectl apply -f -
+  name="$(basename "$manifest")"
+  # shellcheck disable=SC2076
+  if [[ ! " ${MANIFESTS[*]} " =~ " $name " ]]; then
+    echo "error: $name is in deploy/argocd/ but not in the apply order" >&2
+    exit 1
+  fi
 done
 
 cat <<EOF
@@ -181,7 +191,7 @@ cat <<EOF
 Done.
   ArgoCD UI:       kubectl port-forward svc/argocd-server -n argocd 8080:443
   Admin password:  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
-  Preview URLs:    http://pr-<number>.$PREVIEW_BASE_HOST
+  Preview URLs:    https://<slug>-pr-<number>.$PREVIEW_BASE_HOST
 
 Set PREVIEW_BASE_HOST to '$PREVIEW_BASE_HOST' in the repository variables so CI
 can post preview links on pull requests:

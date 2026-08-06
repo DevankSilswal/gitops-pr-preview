@@ -5,11 +5,14 @@ DEMO_HOST ?= pr-1.127.0.0.1.nip.io
 KIND_CLUSTER := gitops-preview
 
 .DEFAULT_GOAL := help
-.PHONY: help test lint render validate tf-validate workflow-scripts alerts e2e bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
+.PHONY: help init test lint render validate tf-validate workflow-scripts slugs alerts e2e bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk -F':.*?## ' '{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+init: ## Point a fresh fork at itself (run once, after forking)
+	./scripts/init-platform.sh
 
 test: ## Run the application test suite
 	cd app && npm ci --silent && npm test
@@ -37,13 +40,15 @@ workflow-scripts: ## Syntax-check the JavaScript embedded in workflows
 alerts: ## Unit-test the Prometheus alert rules
 	./scripts/check-alerts.sh
 
-validate: test lint workflow-scripts alerts tf-validate ## Everything that can be checked without a cluster
+slugs: ## Check the Ruby and shell slug derivations agree
+	./scripts/check-slug-agreement.sh
+
+validate: test lint workflow-scripts slugs alerts tf-validate ## Everything that can be checked without a cluster
 	@echo "All offline checks passed."
 
 bootstrap: ## Install the platform onto the cluster in the current kube context
-	@test -n "$(OWNER)" || { echo "usage: make bootstrap OWNER=<github-owner> NODE_IP=<ip>"; exit 1; }
-	@test -n "$(NODE_IP)" || { echo "usage: make bootstrap OWNER=<github-owner> NODE_IP=<ip>"; exit 1; }
-	./scripts/bootstrap-cluster.sh $(OWNER) $(NODE_IP)
+	@test -n "$(NODE_IP)" || { echo "usage: make bootstrap NODE_IP=<ip>"; exit 1; }
+	./scripts/bootstrap-cluster.sh $(NODE_IP)
 
 e2e: ## Run the end-to-end test against a throwaway kind cluster
 	@test -n "$(IMAGE_TAG)" || { echo "usage: make e2e IMAGE_TAG=main-<sha>"; exit 1; }
@@ -56,9 +61,8 @@ dev-cluster: ## Create a local kind cluster with ports 80 and 443 mapped
 	kind create cluster --name $(KIND_CLUSTER) --config scripts/kind-cluster.yaml
 
 dev-bootstrap: ## Install the platform onto the local kind cluster
-	@test -n "$(OWNER)" || { echo "usage: make dev-bootstrap OWNER=<github-owner>"; exit 1; }
 	DEV_CLUSTER=1 GITHUB_TOKEN="$$(gh auth token)" \
-		./scripts/bootstrap-cluster.sh $(OWNER) 127.0.0.1
+		./scripts/bootstrap-cluster.sh 127.0.0.1
 
 dev-down: ## Delete the local kind cluster
 	kind delete cluster --name $(KIND_CLUSTER)

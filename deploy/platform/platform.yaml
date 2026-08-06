@@ -1,0 +1,15 @@
+# Cluster-level settings. Which repositories are served lives in onboarded/,
+# one file each; this is the handful of things that are true of the platform
+# itself rather than of any repository on it.
+
+# Where the chart comes from. Deliberately this repository and not the
+# onboarded one: an adopter should need a workflow call and a small file, not a
+# vendored Helm chart they then have to keep in sync.
+#
+# It also closes an escalation path. When the chart came from the pull request
+# under review, anyone able to open one could add a ClusterRoleBinding to it
+# and have ArgoCD apply it with ArgoCD's own privileges. A pull request can now
+# change what is deployed, never how.
+chartRepo: https://github.com/DevankSilswal/gitops-pr-preview.git
+chartRevision: main
+chartPath: charts/preview-app

@@ -1,13 +1,21 @@
-# One preview environment per open pull request.
+# One preview environment per open pull request, across every onboarded
+# repository.
 #
-# The pullRequest generator polls the GitHub API and produces one set of
-# parameters per open PR. The template below turns each of those into an ArgoCD
-# Application, which owns its own namespace, Deployment, Service and Ingress.
-# When the PR is closed the generator stops emitting it, the ApplicationSet
-# controller deletes the Application, and the finalizer cascades that deletion
-# to every resource it created. Nothing tears environments down imperatively.
+# The generator is a matrix: every file in deploy/platform/onboarded/, crossed
+# with the pull requests open in the repository each one describes.
 #
-# __OWNER__ and __NODE_IP__ are substituted by scripts/bootstrap-cluster.sh.
+# ArgoCD reads that directory itself, so onboarding is a commit and nothing
+# more — no command against the cluster, no re-bootstrap, no edit to this file.
+# Removing a repository is deleting its file, and every environment it had goes
+# with it on the next poll.
+#
+# When a pull request is closed, or loses its label, the generator stops
+# emitting it, the controller deletes the Application, and the finalizer
+# cascades that deletion to everything it created. Nothing tears environments
+# down imperatively.
+#
+# The placeholders below are filled in at apply time by
+# scripts/render-argocd.rb.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -15,54 +23,72 @@ metadata:
   namespace: argocd
 spec:
   generators:
-    - pullRequest:
-        github:
-          owner: __OWNER__
-          repo: gitops-pr-preview
-          # Only PRs carrying this label get an environment. CI adds it when a
-          # PR opens and a scheduled job removes it once the PR goes stale, so
-          # expiry happens declaratively — the label is the desired state and
-          # ArgoCD simply stops generating the Application. No reaper process
-          # racing the controller to delete namespaces it keeps recreating.
-          labels:
-            - preview
-          tokenRef:
-            secretName: github-token
-            key: token
-        # How quickly a newly opened PR gets an environment.
-        requeueAfterSeconds: 60
+    - matrix:
+        generators:
+          - git:
+              repoURL: __CHART_REPO__
+              revision: __CHART_REVISION__
+              files:
+                - path: "deploy/platform/onboarded/*.yaml"
+              # Poll rather than wait for a webhook, so this works on a cluster
+              # GitHub cannot reach.
+              requeueAfterSeconds: 120
+          - pullRequest:
+              github:
+                owner: "{{owner}}"
+                repo: "{{repo}}"
+                # Only labelled pull requests get an environment. CI adds the
+                # label when one opens and a scheduled job removes it once the
+                # pull request goes stale, so expiry is a change in desired
+                # state rather than a reaper racing this controller.
+                labels:
+                  - preview
+                tokenRef:
+                  secretName: github-token
+                  key: token
+              # How quickly a newly labelled pull request gets an environment.
+              requeueAfterSeconds: 60
 
   template:
     metadata:
-      name: "preview-pr-{{number}}"
+      # The slug is what stops two repositories colliding. Pull request #1
+      # exists in every repository ever created; without it, the second
+      # repository onboarded would take over the first one's namespace.
+      name: "preview-{{slug}}-{{number}}"
       finalizers:
         # Without this, deleting the Application orphans its resources and the
-        # preview environment would keep running after the PR is closed.
+        # environment keeps running after the pull request is closed.
         - resources-finalizer.argocd.argoproj.io
     spec:
       project: previews
       source:
-        repoURL: https://github.com/__OWNER__/gitops-pr-preview.git
-        # Deploy the chart as it exists on the PR itself, so a PR can change
-        # its own deployment config and see the result.
-        targetRevision: "{{head_sha}}"
-        path: charts/preview-app
+        # The chart comes from the platform, not from the repository under
+        # review. An adopter therefore vendors nothing, and a pull request
+        # cannot alter how it is deployed — only what is deployed.
+        repoURL: __CHART_REPO__
+        targetRevision: __CHART_REVISION__
+        path: __CHART_PATH__
         helm:
           parameters:
-            # Lowercase: container registries reject uppercase image names.
             - name: image.repository
-              value: ghcr.io/__OWNER_LC__/preview-app
-            # Must match the tag built by .github/workflows/build.yml exactly.
+              value: "{{image}}"
+            # Must match the tag the reusable build workflow publishes.
             - name: image.tag
               value: "pr-{{number}}-{{head_sha}}"
             - name: environment
-              value: "pr-{{number}}"
+              value: "{{slug}}-pr-{{number}}"
             - name: prNumber
               value: "{{number}}"
             - name: gitSha
               value: "{{head_sha}}"
+            # Where the application listens and what the probes ask for. Every
+            # onboarded application differs here.
+            - name: service.targetPort
+              value: "{{port}}"
+            - name: healthPath
+              value: "{{healthPath}}"
             - name: ingress.host
-              value: "pr-{{number}}.__PREVIEW_BASE_HOST__"
+              value: "{{slug}}-pr-{{number}}.__PREVIEW_BASE_HOST__"
             # Makes the namespace part of the release so pruning removes it.
             - name: namespace.create
               value: "true"
@@ -72,7 +98,7 @@ spec:
               value: "__TLS_ISSUER__"
       destination:
         server: https://kubernetes.default.svc
-        namespace: "pr-{{number}}"
+        namespace: "{{slug}}-pr-{{number}}"
       syncPolicy:
         automated:
           prune: true

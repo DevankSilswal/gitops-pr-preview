@@ -20,7 +20,14 @@ prNumber: "none"
 
 service:
   port: 80
+  # The port the application listens on. Nothing in this chart assumes 3000
+  # beyond this default.
   targetPort: 3000
+
+# What the probes ask for. Every onboarded application exposes something
+# different here — /healthz, /health, or just / for a static site — so it is a
+# value rather than a convention baked into the templates.
+healthPath: /api/health
 
 ingress:
   enabled: true

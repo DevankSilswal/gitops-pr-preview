@@ -12,7 +12,8 @@
 # nothing that grants permissions. Anything else a pull request adds to the
 # chart is refused by ArgoCD rather than applied.
 #
-# __OWNER__ is substituted by scripts/bootstrap-cluster.sh.
+# The allowed repository list is filled in at apply time by
+# scripts/render-argocd.rb, from the onboarded-repositories registry.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -21,12 +22,17 @@ metadata:
 spec:
   description: Ephemeral per-pull-request environments
 
+  # The chart repository, and only that: it is the only thing any Application
+  # generated here deploys from, since the chart no longer comes from the
+  # repository under review.
   sourceRepos:
-    - https://github.com/__OWNER__/gitops-pr-preview.git
+__SOURCE_REPOS__
 
+  # Slug-prefixed, because every onboarded repository gets its own namespace
+  # per pull request: <slug>-pr-<number>.
   destinations:
     - server: https://kubernetes.default.svc
-      namespace: 'pr-*'
+      namespace: '*-pr-*'
 
   # Namespace is the only cluster-scoped object a preview may create. Without
   # this line the chart could create ClusterRoles, CRDs or webhooks.
