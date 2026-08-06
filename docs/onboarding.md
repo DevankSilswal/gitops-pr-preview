@@ -63,22 +63,30 @@ image name differs from the name you are onboarded under, and
 `fail-on-vulnerabilities: false` if a failing scan should warn rather than
 block.
 
-### 3. Ask to be onboarded
+### 3. One file in the platform repository
 
-The platform operator adds you to
-[`deploy/platform/onboarded-repos.yaml`](../deploy/platform/onboarded-repos.yaml):
+Open a pull request adding `deploy/platform/onboarded/my-app.yaml`:
 
 ```yaml
-  - slug: my-app          # appears in namespaces and URLs
-    owner: your-username
-    repo: your-repo
-    image: ghcr.io/your-username/my-app
-    port: 8080            # what your application listens on
-    healthPath: /healthz  # what the probes should ask for
+slug: my-app            # appears in namespaces and URLs; must match the filename
+owner: your-username
+repo: your-repo
+image: ghcr.io/your-username/my-app
+port: "8080"            # quoted — it reaches ArgoCD as a string
+healthPath: /healthz    # what the probes should ask for
 ```
 
-They also need their GitHub token to be able to read pull requests in your
-repository — for a public repository that is automatic.
+That is the entire onboarding. ArgoCD reads that directory from git itself, so
+merging the pull request is what turns your environments on — nobody runs
+anything against the cluster. Deleting the file turns them off again, along
+with every environment you had.
+
+CI checks the file on the pull request: a slug that is not a valid DNS label,
+an unquoted port, a duplicate, or a filename that disagrees with its slug all
+fail there rather than becoming an environment that silently never appears.
+
+The platform's GitHub token also has to be able to read pull requests in your
+repository — automatic for a public one.
 
 Your environments then appear at `https://my-app-pr-<number>.<base-host>`.
 

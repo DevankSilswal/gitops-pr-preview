@@ -74,7 +74,8 @@ CI builds artifacts; ArgoCD deploys them. The pipeline holds no cluster credenti
 ```
 app/                                    Sample service deployed into each environment
 charts/preview-app/                     Helm chart, one release per environment
-deploy/platform/onboarded-repos.yaml           Which repositories get environments — onboarding is an edit here
+deploy/platform/onboarded/                     One file per repository — ArgoCD reads this directly from git
+deploy/platform/platform.yaml                  Where the chart comes from
 deploy/argocd/applicationset-preview.yaml      Pull request generator — the core mechanism
 .github/workflows/preview-build.yml            Reusable workflow other repositories call
 deploy/argocd/application-prod.yaml            main branch, same chart
@@ -117,7 +118,8 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | Container runs unprivileged | `id` inside the pod: `uid=10001(appuser)`, read-only root filesystem |
 | Removing the label tears it down | Application, namespace and URL all gone; the URL returns 404 |
 | Nothing leaks | Zero `pr-*` namespaces remain afterwards |
-| A second repository works with no platform changes | `notes-board` — Python, port 8080, `/healthz` — onboarded with four lines of registry and a workflow call, and served from the same cluster |
+| A second repository works with no platform changes | `notes-board` — Python, port 8080, `/healthz` — onboarded with one small file and a workflow call, and served from the same cluster |
+| Onboarding and offboarding are commits | Deleting that file removed its environment and namespace; committing it back brought them back. Nothing was run against the cluster in either direction |
 | CI comments the preview URL | Posted once, then edited in place on the next push rather than duplicated |
 | TTL sweep expires an idle environment | Label removed, PR commented, environment gone without anything deleting it directly |
 | TLS is issued per environment | `pr-1.…nip.io` served a certificate with a matching SAN; an unknown host still gets ingress-nginx's fallback |
