@@ -1,21 +1,20 @@
 # GitOps Platform with PR Preview Environments
 
-**Live:** https://app.20-24-211-179.nip.io — the `main` branch, deployed by ArgoCD from a commit CI made to this repository.
+Every pull request gets its own isolated Kubernetes environment and a public
+URL — created when it opens, updated on every push, destroyed when it closes.
+What Vercel does on its own runtime, done on a self-managed cluster, and open
+for any repository to join.
 
-Open a pull request here and a second environment appears at `https://devanksilswal-gitops-pr-preview-pr-<number>.20-24-211-179.nip.io` within about a minute, then disappears when the pull request closes.
+**Live:** [app.20-24-211-179.nip.io](https://app.20-24-211-179.nip.io) — the
+`main` branch, deployed by ArgoCD from a commit CI made to this repository.
+Open a pull request and a second environment appears at
+`https://devanksilswal-gitops-pr-preview-pr-<number>.20-24-211-179.nip.io`
+within about a minute.
 
-It is not tied to this repository, or to this cluster. A second one, [notes-board](https://github.com/DevankSilswal/notes-board) — Python, a different port, a different health path — is served by the same cluster with no platform code of its own.
-
-**To use it on your own repository:** add a workflow call, `.github/preview.yml`, and the `pr-preview` topic. An hourly job finds you and onboards you — nobody approves it. [Full instructions](docs/onboarding.md). Or fork this and run your own cluster:
-
-```bash
-make init          # points the fork at itself
-make dev-cluster   # locally, or infra/azure for a cloud VM
-make dev-bootstrap
-```
-
-
-Every pull request automatically gets its own isolated, publicly reachable Kubernetes environment — created when the PR opens, updated on every push, and destroyed when the PR closes. Think Vercel/Netlify preview deploys, built from scratch on Kubernetes with ArgoCD.
+It is not tied to this repository. A second one,
+[notes-board](https://github.com/DevankSilswal/notes-board) — Python, a
+different port, a different health path — is served by the same cluster with no
+platform code of its own.
 
 ## Why
 
@@ -100,16 +99,6 @@ docs/runbook.md                         Every failure this platform has actually
 
 The application in `app/` is deliberately trivial. It reports its own environment name, PR number, git SHA, and build time, so that opening a preview URL immediately proves *which* commit is running there. All of it arrives through environment variables set by CI and Kubernetes.
 
-## Build phases
-
-- [x] **Phase 1 — Sample application.** Express app exposing `/`, `/api/health`, `/api/info`; env-var-driven build identity; multi-stage Docker build on a non-root user; graceful SIGTERM shutdown; unit tests.
-- [x] **Phase 2 — Deployable unit.** Helm chart rendering a Deployment, Service and Ingress per environment, with probes on `/api/health`. Verified with `helm lint` / `helm template`.
-- [x] **Phase 3 — CI.** GitHub Actions runs the tests, then builds and pushes an `amd64`/`arm64` image to GHCR tagged `pr-<number>-<head-sha>`. CI holds no cluster credentials; releasing to production is a commit to a values file that ArgoCD reads.
-- [x] **Phase 4 — GitOps definitions.** ApplicationSet PR generator and the production Application, both written and YAML-validated.
-- [x] **Phase 5 — Infrastructure as code.** Terraform provisioning one Azure VM running k3s via cloud-init, plus a bootstrap script that takes only a node address and so does not know which cloud it is on.
-- [x] **Phase 6 — Lifecycle and operations.** Label-driven TTL expiry, preview URL posted as a pull request comment, optional Let's Encrypt TLS, a locked-down pod security context, and a Grafana dashboard covering the fleet.
-- [x] **Phase 7 — Proven end to end** against a live cluster. See below.
-- [x] **Phase 8 — A public cluster.** Running on Azure with browser-trusted TLS. The manifests did not change; only the address did.
 
 ## What has actually been verified
 
@@ -154,56 +143,24 @@ Four bugs were found only by running this, and are fixed:
 
 Both of the gaps that needed a publicly reachable address are now closed. The platform runs on an Azure VM in `eastasia`, and both hostnames serve certificates issued by Let's Encrypt production — `curl` without `-k` succeeds, so a browser shows no warning.
 
-## Try it locally
+## Using it
 
-No cloud account needed — this is the same path the verification above took.
+Two ways in, neither of which needs anyone's permission. Both are written up in
+**[docs/onboarding.md](docs/onboarding.md)**.
 
-```bash
-make dev-cluster                      # kind cluster with ports 80/443 mapped
-make dev-bootstrap OWNER=<your-user>  # ingress-nginx, ArgoCD, the ApplicationSet
-gh pr edit <n> --add-label preview    # environment appears within ~60s
-curl http://pr-<n>.127-0-0-1.nip.io/api/info
-make dev-down
-```
+**On this cluster** — add a workflow call and `.github/preview.yml` to your
+repository, then give it the `pr-preview` topic. An hourly job finds
+repositories carrying that topic and onboards them. No cloud account, no
+Kubernetes, nobody to ask.
 
-## Deploying to a real cluster
-
-Terraform provisions one VM running k3s; the bootstrap script does not know or
-care which cloud it is on, taking only a GitHub owner and the node's address.
+**On your own** — fork it, run `make init` to point the fork at itself, then
+either `make dev-cluster` for a local one or `infra/azure` for a cloud VM.
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/gitops -N ''
-
-terraform -chdir=infra/azure init
-terraform -chdir=infra/azure apply \
-  -var subscription_id=$(az account show --query id -o tsv) \
-  -var ssh_public_key="$(cat ~/.ssh/gitops.pub)"
-
-# point kubectl at it, then
-GITHUB_TOKEN=$(gh auth token) ./scripts/bootstrap-cluster.sh <owner> <public-ip>
+make            # every target, with what it does
+make validate   # everything checkable without a cluster
+make e2e        # a preview environment on a throwaway cluster
 ```
 
-On a student credit the VM, not the cluster, is what costs money. `make
-azure-stop` deallocates it between demonstrations, which stops compute charges
-while keeping the disk and the static IP — stopping the machine from inside the
-guest does not, because Azure keeps billing a VM it still has reserved.
-
-`make validate` runs everything checkable without a cluster: tests, chart lint in both TLS modes, and `terraform validate`.
-
-## Running the sample app locally
-
-```bash
-cd app
-npm install
-npm test
-npm start        # http://localhost:3000
-```
-
-Or as the container that actually gets deployed:
-
-```bash
-cd app
-docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t preview-app .
-docker run -p 3000:3000 -e ENVIRONMENT=pr-42 -e PR_NUMBER=42 preview-app
-curl localhost:3000/api/info
-```
+When something breaks, **[docs/runbook.md](docs/runbook.md)** lists every
+failure this platform has actually produced, written from the symptom inward.
