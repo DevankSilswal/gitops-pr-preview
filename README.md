@@ -6,7 +6,7 @@ Open a pull request here and a second environment appears at `https://arcade-pr-
 
 It is not tied to this repository, or to this cluster. A second one, [notes-board](https://github.com/DevankSilswal/notes-board) — Python, a different port, a different health path — is served by the same cluster with no platform code of its own.
 
-**To use it on your own repository:** either [onboard it here](docs/onboarding.md#a-use-an-existing-cluster) — a workflow call and one small file — or fork this and run your own:
+**To use it on your own repository:** add a workflow call, `.github/preview.yml`, and the `pr-preview` topic. An hourly job finds you and onboards you — nobody approves it. [Full instructions](docs/onboarding.md). Or fork this and run your own cluster:
 
 ```bash
 make init          # points the fork at itself
@@ -128,6 +128,7 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | Nothing leaks | Zero `pr-*` namespaces remain afterwards |
 | A second repository works with no platform changes | `notes-board` — Python, port 8080, `/healthz` — onboarded with one small file and a workflow call, and served from the same cluster |
 | Onboarding and offboarding are commits | Deleting that file removed its environment and namespace; committing it back brought them back. Nothing was run against the cluster in either direction |
+| Repositories onboard themselves | Discovery ran against real GitHub, found nine repositories carrying the topic, onboarded the two that had opted in properly and named a reason for each it skipped |
 | CI comments the preview URL | Posted once, then edited in place on the next push rather than duplicated |
 | TTL sweep expires an idle environment | Label removed, PR commented, environment gone without anything deleting it directly |
 | TLS is issued per environment | `pr-1.…nip.io` served a certificate with a matching SAN; an unknown host still gets ingress-nginx's fallback |

@@ -63,32 +63,35 @@ image name differs from the name you are onboarded under, and
 `fail-on-vulnerabilities: false` if a failing scan should warn rather than
 block.
 
-### 3. One file in the platform repository
+### 3. Opt in — nobody needs to approve you
 
-Open a pull request adding `deploy/platform/onboarded/my-app.yaml`:
+Add `.github/preview.yml` to your repository:
 
 ```yaml
-slug: my-app            # appears in namespaces and URLs; must match the filename
-owner: your-username
-repo: your-repo
-image: ghcr.io/your-username/my-app
-port: "8080"            # quoted — it reaches ArgoCD as a string
-healthPath: /healthz    # what the probes should ask for
+port: 8080              # what your application listens on
+healthPath: /healthz    # what the probes should ask for; defaults to /
+image: my-app           # optional; defaults to the repository name
 ```
 
-That is the entire onboarding. ArgoCD reads that directory from git itself, so
-merging the pull request is what turns your environments on — nobody runs
-anything against the cluster. Deleting the file turns them off again, along
-with every environment you had.
+Then add the topic **`pr-preview`** to the repository (Settings, or the gear
+beside About on the repository page).
 
-CI checks the file on the pull request: a slug that is not a valid DNS label,
-an unquoted port, a duplicate, or a filename that disagrees with its slug all
-fail there rather than becoming an environment that silently never appears.
+That is all of it. An hourly job on the platform finds repositories carrying
+that topic, reads this file, and onboards them. You do not ask anyone, and
+nobody approves. Remove the topic or the file and your environments go away on
+the next run.
 
-The platform's GitHub token also has to be able to read pull requests in your
-repository — automatic for a public one.
+Your environments appear at
+`https://<owner>-<repo>-pr-<number>.<base-host>`.
 
-Your environments then appear at `https://my-app-pr-<number>.<base-host>`.
+The slug is derived from your owner and repository rather than chosen. With
+onboarding open to anyone a chosen slug would be squattable — whoever asked for
+`app` first would own it — and two repositories claiming the same one would end
+up sharing an environment.
+
+**Your repository must be public**, and its packages readable, since the
+platform reads your pull requests and pulls your images without credentials of
+yours.
 
 ### What you do not need
 
