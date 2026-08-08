@@ -3,6 +3,12 @@
 {{- fail "ingress.host is required when ingress.enabled is true (e.g. pr-42.<node-ip>.nip.io)" -}}
 {{- end -}}
 {{- $authOn := and .Values.auth.enabled .Values.secretSalt -}}
+{{/*
+Only ask for a certificate when the cluster is not already serving one that
+covers this hostname. Requesting one per environment on top of a wildcard would
+reintroduce exactly the rate limit the wildcard exists to remove.
+*/}}
+{{- $ownCert := and .Values.ingress.tls.enabled (not .Values.ingress.tls.wildcard) -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -10,7 +16,7 @@ metadata:
   labels:
     {{- include "preview-app.labels" . | nindent 4 }}
   annotations:
-    {{- if .Values.ingress.tls.enabled }}
+    {{- if $ownCert }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
     {{- end }}
     {{- if $authOn }}
@@ -31,11 +37,17 @@ metadata:
     {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
-  {{- if .Values.ingress.tls.enabled }}
+  {{- if $ownCert }}
   tls:
     - hosts:
         - {{ .Values.ingress.host | quote }}
       secretName: {{ include "preview-app.fullname" . }}-tls
+  {{- end }}
+  {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.wildcard }}
+  # No tls block on purpose. A wildcard certificate covering this hostname is
+  # served by the ingress controller through default-ssl-certificate, so naming
+  # a secret here would ask cert-manager for a second one — which is the per-PR
+  # issuance the wildcard was introduced to stop.
   {{- end }}
   rules:
     - host: {{ .Values.ingress.host | quote }}

@@ -21,3 +21,12 @@ image: preview-app
 # Off by default. It is the most expensive thing this platform will schedule
 # for you, and most applications do not need one.
 database: false
+
+# A background process beside the web one — a queue consumer, a scheduler.
+# Given as the command to run; the same image is used, with ROLE=worker set so
+# one image can branch on it. It gets no URL: nothing should reach it from
+# outside, and it is given no Service so that nothing can.
+#
+# Same image on purpose. A worker built from a different commit than the page a
+# reviewer is looking at would make the environment lie about what it runs.
+worker: false

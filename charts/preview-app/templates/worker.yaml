@@ -1,0 +1,126 @@
+{{- if .Values.worker.enabled -}}
+{{- if not .Values.worker.command -}}
+{{- fail "worker.enabled needs worker.command — without one the image's own entrypoint runs, which is a second copy of the web process rather than a worker" -}}
+{{- end -}}
+# The background process that runs beside the web one.
+#
+# No Service and no Ingress: nothing should reach this from outside, and giving
+# it neither is how that is enforced rather than merely intended. The
+# application's NetworkPolicy selects pods by the application's selector
+# labels, which these do not carry — so this gets its own, the same lesson the
+# database taught. A pod that no policy selects is unrestricted.
+#
+# Identical image and identical build identity to the web process. A worker
+# built from a different commit than the page a reviewer is looking at would
+# make the environment lie about what it is running, which is the one thing
+# this platform is careful about above all others.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "preview-app.workerFullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "preview-app.workerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "preview-app.labels" . | nindent 8 }}
+        {{- include "preview-app.workerSelectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          command: ["/bin/sh", "-c", {{ .Values.worker.command | quote }}]
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: PR_NUMBER
+              value: {{ .Values.prNumber | quote }}
+            # Says which process this is, so one image can branch on it without
+            # needing a second build or a second tag.
+            - name: ROLE
+              value: worker
+            {{- if .Values.gitSha }}
+            - name: GIT_SHA
+              value: {{ .Values.gitSha | quote }}
+            {{- end }}
+            {{- if .Values.database.enabled }}
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:%s@%s:%v/%s" .Values.database.user (include "preview-app.databasePassword" .) (include "preview-app.databaseFullname" .) .Values.database.port .Values.database.name | quote }}
+            {{- end }}
+          # No probes. A worker has no port to ask about, and an exec probe
+          # would be guessing at what "healthy" means for somebody else's
+          # queue consumer. If it crashes, the restart count is the signal and
+          # PreviewCrashLooping is already watching for it.
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "preview-app.workerFullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "preview-app.workerSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # Nothing may reach it. An empty ingress rule list denies everything, which
+  # is the correct answer for a process with no port.
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- if .Values.database.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "preview-app.databaseSelectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.database.port }}
+          protocol: TCP
+    {{- end }}
+    # The same outward access the web process gets, and no more: the public
+    # internet with the private ranges and the metadata service carved out,
+    # on the ports a dependency fetch or an API call actually needs.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        {{- toYaml .Values.networkPolicy.egressPorts | nindent 8 }}
+{{- end }}
+{{- end }}

@@ -37,6 +37,21 @@ fi
 echo "==> Checking cluster connectivity"
 kubectl cluster-info >/dev/null
 
+# The base hostname every preview URL hangs off, decided here because both the
+# certificate and the manifests need it and they are set up at opposite ends of
+# this script.
+#
+# With a DuckDNS domain, that domain. Without one, nip.io derived from the node
+# address — and in dash form, because nip.io splits on dashes as well as dots
+# when it looks for an address, so a dotted IP after a label like `pr-1` is
+# misread: pr-1.127.0.0.1.nip.io resolves to 1.127.0.0.
+if [[ -n "${DUCKDNS_DOMAIN:-}" ]]; then
+  PREVIEW_BASE_HOST="$DUCKDNS_DOMAIN"
+else
+  PREVIEW_BASE_HOST="$(echo "$NODE_IP" | tr '.' '-').nip.io"
+fi
+echo "    preview hostnames will be <slug>-pr-<number>.$PREVIEW_BASE_HOST"
+
 echo "==> Installing ingress-nginx"
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
 helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true
@@ -90,6 +105,49 @@ if [[ -n "${ACME_EMAIL:-}" || -n "${WITH_TLS:-}" ]]; then
       "$REPO_ROOT/deploy/platform/cluster-issuers.yaml" | kubectl apply -f -
   else
     echo "==> Skipping Let's Encrypt issuers (set ACME_EMAIL to create them)"
+  fi
+
+  # One certificate for every hostname this cluster will ever serve, instead of
+  # one per pull request. See deploy/platform/wildcard-tls.yaml for why that
+  # matters more than it sounds: the per-host path spends a rate limit that is
+  # shared with every other user of the same registered domain.
+  if [[ -n "${DUCKDNS_TOKEN:-}" && -n "${ACME_EMAIL:-}" ]]; then
+    echo "==> Installing the DuckDNS DNS-01 solver"
+    helm repo add duckdns https://ebrianne.github.io/helm-charts >/dev/null 2>&1 || true
+    helm repo update >/dev/null
+    helm upgrade --install cert-manager-webhook-duckdns duckdns/cert-manager-webhook-duckdns \
+      --namespace cert-manager \
+      --set duckdns.token="$DUCKDNS_TOKEN" \
+      --set clusterIssuer.production.create=false \
+      --set clusterIssuer.staging.create=false \
+      --wait --timeout 5m
+
+    # The solver reads the token from a secret in its own namespace; the chart
+    # above creates one, and this makes the name match what the issuer asks for
+    # regardless of what the chart called it.
+    kubectl -n cert-manager create secret generic duckdns-token \
+      --from-literal=token="$DUCKDNS_TOKEN" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    echo "==> Requesting the wildcard certificate for *.$PREVIEW_BASE_HOST"
+    sed -e "s|__ACME_EMAIL__|$ACME_EMAIL|g" \
+        -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
+      "$REPO_ROOT/deploy/platform/wildcard-tls.yaml" | kubectl apply -f -
+
+    # Serve it for any host that does not bring its own certificate — which,
+    # once the wildcard exists, is every preview environment.
+    echo "==> Pointing ingress-nginx at the wildcard"
+    helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
+      --namespace ingress-nginx --reuse-values \
+      --set controller.extraArgs.default-ssl-certificate=ingress-nginx/preview-wildcard-tls \
+      --wait --timeout 10m
+
+    WILDCARD_TLS=true
+    echo "    a wildcard covers every preview; none will request its own"
+  else
+    WILDCARD_TLS=false
+    [[ -n "${ACME_EMAIL:-}" ]] && \
+      echo "==> No DUCKDNS_TOKEN — falling back to a certificate per hostname"
   fi
 else
   echo "==> Skipping cert-manager (set ACME_EMAIL, or WITH_TLS for self-signed)"
@@ -203,11 +261,6 @@ kubectl create secret generic github-token \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> Applying ArgoCD manifests for node=$NODE_IP"
-# nip.io splits on dashes as well as dots when it looks for an address, so a
-# dotted IP after a label like `pr-1` is misread: pr-1.127.0.0.1.nip.io
-# resolves to 1.127.0.0. Writing the address in dash form removes the
-# ambiguity and keeps the readable pr-<number> prefix.
-PREVIEW_BASE_HOST="$(echo "$NODE_IP" | tr '.' '-').nip.io"
 
 # Preview environments get certificates only if an issuer exists to sign them.
 if [[ -n "${ACME_EMAIL:-}" ]]; then
@@ -237,6 +290,9 @@ fi
 # past, since a malformed one would otherwise show up as an environment that
 # never appears.
 export PREVIEW_BASE_HOST TLS_ENABLED TLS_ISSUER
+# Set above, where the wildcard is requested. Tells the chart not to ask for a
+# certificate of its own.
+export TLS_WILDCARD="${WILDCARD_TLS:-false}"
 export PROD_IMAGE_TAG=latest
 # PREVIEW_SECRET_SALT is already exported above, where it is generated or read
 # back; render-argocd.rb substitutes it into the ApplicationSet.

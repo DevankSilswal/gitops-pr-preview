@@ -20,6 +20,16 @@ app.kubernetes.io/name: {{ include "preview-app.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{- define "preview-app.workerFullname" -}}
+{{- printf "%s-worker" (include "preview-app.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "preview-app.workerSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "preview-app.name" . }}-worker
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: worker
+{{- end -}}
+
 {{- define "preview-app.databaseFullname" -}}
 {{- printf "%s-db" (include "preview-app.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
