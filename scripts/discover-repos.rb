@@ -40,9 +40,39 @@ require 'open3'
 
 ROOT = File.expand_path('..', __dir__)
 ONBOARDED = File.join(ROOT, 'deploy/platform/onboarded')
+ALLOWLIST = File.join(ROOT, 'deploy/platform/allowlist.yaml')
 TOPIC = ENV.fetch('PREVIEW_TOPIC', 'pr-preview')
 MAX_REPOS = Integer(ENV.fetch('MAX_REPOS', '10'))
 CONFIG_PATH = '.github/preview.yml'
+
+# Who may run code on this cluster.
+#
+# A topic is not permission — anyone can add one to their own repository. Until
+# this existed, that meant any GitHub user could cause containers to be
+# scheduled on the operator's machine, billed to the operator's cloud account,
+# egressing from the operator's IP address. The isolation controls bound what a
+# preview can do; none of them bound who may start one, and that gap ends with
+# a suspended subscription rather than a compromised cluster.
+#
+# Fails closed. A missing, malformed or empty allowlist onboards nobody rather
+# than everybody — the failure that matters here is the permissive one.
+allowlist = begin
+  YAML.safe_load(File.read(ALLOWLIST))
+rescue Errno::ENOENT
+  abort "#{ALLOWLIST} is missing; refusing to onboard anyone"
+rescue Psych::SyntaxError => e
+  abort "#{ALLOWLIST} is not valid YAML: #{e.message}"
+end
+
+unless allowlist.is_a?(Hash) && allowlist['owners'].is_a?(Array)
+  abort "#{ALLOWLIST}: expected a mapping with an 'owners' list"
+end
+
+# Compared case-insensitively: GitHub usernames are case-preserving but not
+# case-sensitive, so `DevankSilswal` and `devanksilswal` are one account and
+# only one of them being listed would be a confusing near-miss.
+ALLOWED_OWNERS = allowlist['owners'].map { |o| o.to_s.strip.downcase }.reject(&:empty?).freeze
+abort "#{ALLOWLIST}: the owners list is empty; refusing to onboard anyone" if ALLOWED_OWNERS.empty?
 
 def gh(*args)
   out, err, status = Open3.capture3('gh', *args)
@@ -88,6 +118,14 @@ skipped = []
 
 results.each do |repo|
   full = repo['full_name']
+
+  # Checked before anything else, including before fetching the config file:
+  # an owner who is not allowed here should cost this job one comparison, not a
+  # round trip to their repository.
+  unless ALLOWED_OWNERS.include?(repo['owner'].to_s.downcase)
+    skipped << [full, "#{repo['owner']} is not on the allowlist"]
+    next
+  end
 
   if onboarded.size >= MAX_REPOS
     skipped << [full, "capacity: already serving #{MAX_REPOS}"]
@@ -143,6 +181,20 @@ results.each do |repo|
     next
   end
 
+  # A background process beside the web one, given as the command to run.
+  # `false` or absent means none, which is the common case.
+  worker = config.fetch('worker', false)
+  worker = '' if worker == false
+  worker = worker.to_s.strip
+  # The command reaches the cluster through a Helm parameter inside a YAML
+  # manifest. A newline or a double quote there does not fail loudly — it
+  # produces a manifest that parses into something else, which is the worst way
+  # for this to go wrong.
+  if worker.include?("\n") || worker.include?('"')
+    skipped << [full, 'worker command may not contain newlines or double quotes']
+    next
+  end
+
   slug = slug_for(repo['owner'], repo['name'])
 
   onboarded << {
@@ -153,12 +205,21 @@ results.each do |repo|
     'port' => port,
     'healthPath' => health,
     'database' => database.to_s,
+    # Two fields rather than one, because the ApplicationSet substitutes values
+    # into Helm parameters literally and cannot decide "enabled" from whether a
+    # string is empty.
+    'workerEnabled' => (worker.empty? ? 'false' : 'true'),
+    'workerCommand' => worker,
   }
 end
 
 # A search that returns nothing — a GitHub outage, a bad token, a renamed topic
 # — would otherwise offboard every repository at once and delete every
 # environment on the cluster. Refuse instead.
+#
+# This also covers the allowlist being emptied by accident: the correct
+# response to "nobody is allowed" is to stop and say so, not to silently tear
+# down every environment on the cluster in one run.
 if onboarded.empty?
   warn 'discovery found no valid repositories; leaving the existing files alone'
   warn 'if that is genuinely correct, delete the files by hand'
