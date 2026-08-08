@@ -117,6 +117,14 @@ tests:
         values: "1x25"
       - series: 'kube_pod_info{namespace="acme-app-pr-9",pod="i"}'
         values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-10",pod="j"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-11",pod="k"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-12",pod="l"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-13",pod="m"}'
+        values: "1x25"
     alert_rule_test:
       - eval_time: 20m
         alertname: TooManyPreviewEnvironments
@@ -124,6 +132,40 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: "9 preview environments are running at once"
+              summary: "13 preview environments are running at once"
               description: >-
                 More environments are open than this single node was sized for. Closing stale pull requests, or lowering the lifecycle TTL, frees the capacity.
+
+  # The threshold is an early warning, so the fleet sitting exactly at it must
+  # stay quiet. Off-by-one here would either page constantly or never.
+  - interval: 1m
+    name: a fleet exactly at the ceiling stays quiet
+    input_series:
+      - series: 'kube_pod_info{namespace="acme-app-pr-1",pod="a"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-2",pod="b"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-3",pod="c"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-4",pod="d"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-5",pod="e"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-6",pod="f"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-7",pod="g"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-8",pod="h"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-9",pod="i"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-10",pod="j"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-11",pod="k"}'
+        values: "1x25"
+      - series: 'kube_pod_info{namespace="acme-app-pr-12",pod="l"}'
+        values: "1x25"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: TooManyPreviewEnvironments
+        exp_alerts: []
