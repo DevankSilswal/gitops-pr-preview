@@ -198,6 +198,9 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | A failing rollout does not take the environment down | An image tag that cannot exist is rolled out and the environment keeps serving throughout |
 | Recovery is timed, not hoped for | Pod deleted, Deployment deleted, Service deleted — each restored, with the seconds recorded |
 | Production verifies itself | The release is confirmed by `/api/info` reporting the promoted SHA, and reverted automatically if it never does |
+| Re-running the bootstrap is safe, and checked | Run twice against a fresh cluster: the second run changed nothing, the secret salt survived, and no pod was left crash-looping |
+| A worker runs beside the web process | Deployed on a real cluster: it became Available, reported `ROLE=worker`, and its address appeared in no Service endpoint |
+| A wildcard means previews request no certificate | With TLS enabled and a wildcard present, the Ingress carried no cert-manager annotation and named no TLS secret |
 
 Four bugs were found only by running this, and are fixed:
 
