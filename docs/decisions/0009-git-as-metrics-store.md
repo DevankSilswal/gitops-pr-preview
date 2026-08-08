@@ -41,9 +41,22 @@ platform ever outgrows that, outgrowing it is the good problem.
 
 ## Measurement details worth defending
 
-- **From `pull_request.created_at`, not from job start.** The difference is the
-  build, and the build is part of what a reviewer waits through. Measuring from
-  job start would flatter the platform by excluding its largest component.
+- **From `pull_request.created_at`, not from job start** — for a first
+  provision. The difference is the build, and the build is part of what a
+  reviewer waits through. Measuring from job start would flatter the platform by
+  excluding its largest component.
+- **From the commit, for a redeployment.** The first real samples recorded
+  1138s and 1567s for redeployments that took about a minute, because both were
+  measured from `created_at` on a pull request that had been open for twenty.
+  That measures the age of the pull request, not the speed of the platform, and
+  grows without bound. The committer date of the commit under review is the
+  closest exact answer to "when did somebody push this" — `updated_at` also
+  moves on comments and reviews, which would make a redeployment look faster for
+  having been discussed first.
+
+  Worth stating plainly because it is the trap in any latency metric: a number
+  that is easy to collect is not the same as the number the promise is about,
+  and the difference only became obvious once real values arrived.
 - **`provision` and `redeploy` are recorded separately.** A first environment
   and a push into one that already exists are different operations with
   different expected latencies, and averaging them describes neither. The

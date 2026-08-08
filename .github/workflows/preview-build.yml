@@ -353,11 +353,22 @@ jobs:
           AUTH_ON: ${{ steps.creds.outputs.enabled }}
           PREVIEW_USER: ${{ steps.creds.outputs.username }}
           PREVIEW_PASSWORD: ${{ steps.creds.outputs.password }}
-          # When the pull request was opened, not when this job started. The
-          # difference is the build, and the build is part of what a reviewer
-          # waits through — measuring from job start would flatter the platform
-          # by excluding its largest component.
+          # The baseline the wait is measured from, and it is not the same
+          # question for the two cases.
+          #
+          # Opening a pull request: from created_at. Not from when this job
+          # started — the difference is the build, and the build is part of what
+          # a reviewer waits through, so measuring from job start would flatter
+          # the platform by excluding its largest component.
+          #
+          # Pushing to one that already exists: from the commit. Using created_at
+          # here measures the age of the pull request rather than the speed of
+          # the platform, and grows without bound — the first real samples
+          # recorded 1138s and 1567s for redeployments that took about a minute,
+          # because the pull request had been open for twenty.
           OPENED_AT: ${{ github.event.pull_request.created_at }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          IS_FIRST: ${{ github.event.action == 'opened' }}
         run: |
           set -uo pipefail
           echo "url=$URL" >> "$GITHUB_OUTPUT"
@@ -367,7 +378,16 @@ jobs:
             CURL_AUTH=(--user "${PREVIEW_USER}:${PREVIEW_PASSWORD}")
           fi
 
-          opened_epoch=$(date -u -d "$OPENED_AT" +%s 2>/dev/null || echo 0)
+          if [ "$IS_FIRST" = "true" ]; then
+            baseline_at="$OPENED_AT"
+          else
+            # Committer date of the commit under review. The closest thing to
+            # "when did somebody push this" that is exact rather than inferred —
+            # updated_at also moves on comments and reviews, which would make a
+            # redeployment look faster for having been discussed first.
+            baseline_at=$(git log -1 --format=%cI "$HEAD_SHA" 2>/dev/null || echo '')
+          fi
+          baseline_epoch=$(date -u -d "$baseline_at" +%s 2>/dev/null || echo 0)
 
           deadline=$(( SECONDS + ${{ inputs.health-timeout-seconds }} ))
           while [ $SECONDS -lt $deadline ]; do
@@ -378,8 +398,8 @@ jobs:
               # push to an existing pull request, where it measures a
               # redeployment rather than a first provision; slo-report.rb
               # separates the two.
-              if [ "$opened_epoch" -gt 0 ]; then
-                echo "provisioning_seconds=$(( $(date -u +%s) - opened_epoch ))" >> "$GITHUB_OUTPUT"
+              if [ "$baseline_epoch" -gt 0 ]; then
+                echo "provisioning_seconds=$(( $(date -u +%s) - baseline_epoch ))" >> "$GITHUB_OUTPUT"
               fi
               echo "answered 200 after ${SECONDS}s of waiting"
               exit 0
