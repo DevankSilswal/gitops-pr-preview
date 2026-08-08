@@ -57,13 +57,30 @@ __SOURCE_REPOS__
       kind: LimitRange
     - group: cert-manager.io
       kind: Certificate
+    # Rendered only above one replica, so no preview environment creates one
+    # today. It was missing here anyway, which meant the first person to raise
+    # replicaCount on a preview would have got a sync failure rather than a
+    # second pod.
+    - group: policy
+      kind: PodDisruptionBudget
+    # The htpasswd file behind a private preview. See the blacklist below for
+    # why this one kind of Secret is admitted and the rest are not.
+    - group: ''
+      kind: Secret
 
   # Nothing here should ever create identities or grant permissions.
+  #
+  # Secret used to sit in this list. It is now on the whitelist above, and the
+  # distinction is worth being explicit about: a ServiceAccount, Role or
+  # RoleBinding grants a *caller* the ability to act on the cluster, and a
+  # preview environment must never be able to mint one. A Secret grants
+  # nothing — it is data the pods in one namespace can read, and those pods
+  # already run whatever code the pull request contains. Admitting it lets an
+  # environment hold its own basic-auth credential; it does not widen what an
+  # environment can do.
   namespaceResourceBlacklist:
     - group: ''
       kind: ServiceAccount
-    - group: ''
-      kind: Secret
     - group: rbac.authorization.k8s.io
       kind: Role
     - group: rbac.authorization.k8s.io

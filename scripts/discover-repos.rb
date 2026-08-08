@@ -10,14 +10,17 @@
 #   PREVIEW_TOPIC   GitHub topic to search for (default: pr-preview)
 #   MAX_REPOS       how many to serve (default: 10)
 #
-# On capacity: the reusable build workflow caps environments per repository,
-# and this caps repositories, so the worst case is the product of the two. Size
-# them against the node. This one has 2 vCPU, which holds roughly 58
-# environments requesting what the sample applications request — or four
-# requesting the per-namespace ceiling. Ten repositories at five each fits the
-# first case and not the second; a heavy application meeting a full node gets
-# Pending pods rather than a broken cluster, which is the failure worth having.
 #   GH_TOKEN        used by the gh CLI
+#
+# On capacity: this caps repositories, the reusable build workflow caps
+# environments per repository, and the theoretical worst case is the product of
+# the two — which exceeds the node, and always will, because caps that multiply
+# safely would have to be uselessly small. The honest model is in
+# docs/capacity.md: these two are preventive, stopping any one repository
+# monopolising the cluster, and the TooManyPreviewEnvironments alert is the
+# backstop that catches the aggregate. A heavy application meeting a full node
+# gets Pending pods rather than a broken cluster, which is the failure worth
+# having.
 #
 # Opting in is a topic on the repository plus .github/preview.yml. Nobody has
 # to be asked and nobody approves, which is the point — and also why the
@@ -117,8 +120,26 @@ results.each do |repo|
   end
 
   image_name = config.fetch('image', repo['name']).to_s.strip.downcase
+  # The whole point of composing the reference as ghcr.io/<owner>/<image> is
+  # that a repository can only ever name images inside its own namespace. A
+  # `..` segment escapes that, so path traversal is rejected explicitly rather
+  # than left to the registry to refuse.
+  if image_name.match?(%r{\A\.\.\z|\A\.\./|/\.\./|/\.\.\z})
+    skipped << [full, "image '#{image_name}' may not contain a '..' path segment"]
+    next
+  end
   unless image_name.match?(%r{\A[a-z0-9][a-z0-9._/-]*\z})
     skipped << [full, "image '#{image_name}' is not a valid image name"]
+    next
+  end
+
+  # Opt-in, and expensive: a Postgres per pull request is the largest thing
+  # this platform will place on a single node, so it is off unless asked for.
+  # Written as a string because the ApplicationSet substitutes it straight into
+  # a Helm parameter, where a YAML boolean would arrive unquoted.
+  database = config.fetch('database', false)
+  unless [true, false].include?(database)
+    skipped << [full, "database must be true or false, got '#{config['database']}'"]
     next
   end
 
@@ -131,6 +152,7 @@ results.each do |repo|
     'image' => "ghcr.io/#{repo['owner'].downcase}/#{image_name}",
     'port' => port,
     'healthPath' => health,
+    'database' => database.to_s,
   }
 end
 

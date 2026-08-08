@@ -2,16 +2,33 @@
 {{- if not .Values.ingress.host -}}
 {{- fail "ingress.host is required when ingress.enabled is true (e.g. pr-42.<node-ip>.nip.io)" -}}
 {{- end -}}
+{{- $authOn := and .Values.auth.enabled .Values.secretSalt -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "preview-app.fullname" . }}
   labels:
     {{- include "preview-app.labels" . | nindent 4 }}
-  {{- if .Values.ingress.tls.enabled }}
   annotations:
+    {{- if .Values.ingress.tls.enabled }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
-  {{- end }}
+    {{- end }}
+    {{- if $authOn }}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: {{ include "preview-app.fullname" . }}-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Preview environment {{ .Values.environment }}"
+    {{- end }}
+    {{- if .Values.auth.noIndex }}
+    # Kept deliberately separate from the password. A mistake in the auth
+    # annotations should not also mean unreleased work gets crawled and
+    # cached, and a crawler that has already been let in cannot be un-told.
+    #
+    # A response header rather than a robots.txt file, because the chart serves
+    # every onboarded application and cannot add a file to somebody else's
+    # image. Snippet annotations are disabled by default in current
+    # ingress-nginx; this uses the supported header mechanism instead.
+    nginx.ingress.kubernetes.io/custom-headers: {{ .Release.Namespace }}/{{ include "preview-app.fullname" . }}-headers
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   {{- if .Values.ingress.tls.enabled }}
@@ -31,4 +48,24 @@ spec:
                 name: {{ include "preview-app.fullname" . }}
                 port:
                   number: {{ .Values.service.port }}
+{{- if .Values.auth.noIndex }}
+---
+# The header the annotation above points at.
+#
+# ingress-nginx will only emit response headers whose names appear in the
+# controller's own global-allowed-response-headers list, which
+# scripts/bootstrap-cluster.sh sets to exactly X-Robots-Tag. That indirection
+# is the point: the alternative is enabling configuration-snippet annotations,
+# which lets any Ingress in the cluster inject arbitrary nginx configuration.
+# On a cluster whose whole purpose is running other people's unreviewed code,
+# that would be handing out the ingress controller.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "preview-app.fullname" . }}-headers
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+data:
+  X-Robots-Tag: "noindex, nofollow, noarchive"
+{{- end }}
 {{- end }}

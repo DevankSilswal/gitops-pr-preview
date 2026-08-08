@@ -46,6 +46,85 @@ networkPolicy:
   # Namespace the ingress controller runs in; the only source allowed to reach
   # a preview environment.
   ingressNamespace: ingress-nginx
+  # Egress is restricted to these ports rather than every port on the public
+  # internet. A preview runs unreviewed code from a repository this operator
+  # may not control, and the node's address is the source anyone abused by it
+  # would see. DNS, HTTP and HTTPS cover fetching dependencies and calling APIs;
+  # they do not cover sending mail, scanning SSH, or holding a command-and-
+  # control channel on an arbitrary port.
+  egressPorts:
+    - port: 80
+      protocol: TCP
+    - port: 443
+      protocol: TCP
+
+# Preview environments are private by default.
+#
+# Without this, every environment is a public URL that anyone can reach and
+# that search engines will index — unreleased work, on a guessable hostname
+# (<slug>-pr-<number>), served to the open internet. That is a dealbreaker for
+# any team with something not yet announced, and it is the largest single gap
+# against the commercial platforms this project is measured against.
+#
+# The password is derived, not stored, and CI posts it in the pull request's
+# own pinned comment. Anyone who can read the pull request gets in; anyone who
+# cannot, does not. The authorisation question is answered by GitHub's existing
+# permissions, and the platform keeps no user list of its own.
+auth:
+  enabled: true
+  username: preview
+  # Search engines index anything they can reach. Independent of the password,
+  # because a misconfigured auth annotation should not also mean the
+  # environment gets crawled — and a crawler already let in cannot be un-told.
+  noIndex: true
+
+# Cluster-wide secret material, generated once by bootstrap-cluster.sh and
+# passed in by the ApplicationSet. Never committed.
+#
+# Every per-environment secret is derived from this plus the environment's own
+# identity, so nothing has to be generated at render time — see the note on
+# preview-app.derivedSecret for why that matters to ArgoCD. Empty means the
+# preview password cannot be derived, so auth turns itself off rather than
+# falling back to something predictable; a database asked for without it fails
+# the render outright, because a database with a guessable password is worse
+# than no database.
+secretSalt: ""
+
+# An ephemeral database, one per pull request.
+#
+# A preview environment that cannot hold data is a demo of a preview
+# environment. This is also the place the commercial platforms are weakest:
+# they point every preview at one shared branch database, so two pull requests
+# running conflicting migrations corrupt each other's review. A database that
+# is created and destroyed with the environment does not have that problem.
+#
+# Deliberately not a StatefulSet and deliberately not a PersistentVolumeClaim.
+# Data resetting when the pod restarts is correct for a preview — it is
+# supposed to be reproducible from migrations and fixtures, not accumulated —
+# and a single node has no spare volumes to hand out per pull request.
+#
+# The platform supplies an empty database and the connection string. Migrating
+# and seeding it is the application's job on startup, which is what real
+# applications already do. Reading a fixture out of the branch under review
+# would put pull-request-controlled content back into the deploy path, which is
+# exactly what deploy/argocd/appproject-previews.yaml exists to prevent.
+database:
+  enabled: false
+  # Alpine, because the image is pulled onto a single small node once per
+  # environment and the difference is around 250 MB each time.
+  image: postgres:17-alpine
+  name: app
+  user: app
+  port: 5432
+  # Small enough that the per-namespace ResourceQuota still admits the
+  # application alongside it.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
 
 quota:
   enabled: true

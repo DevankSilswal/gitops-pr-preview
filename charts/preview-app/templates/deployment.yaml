@@ -52,6 +52,14 @@ spec:
             - name: BUILT_AT
               value: {{ .Values.builtAt | quote }}
             {{- end }}
+            {{- if .Values.database.enabled }}
+            # The application migrates and seeds this itself on startup. The
+            # platform supplies an empty database and the address of it —
+            # taking a fixture out of the branch under review would put
+            # pull-request-controlled content back into the deploy path.
+            - name: DATABASE_URL
+              value: {{ printf "postgres://%s:%s@%s:%v/%s" .Values.database.user (include "preview-app.databasePassword" .) (include "preview-app.databaseFullname" .) .Values.database.port .Values.database.name | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: {{ .Values.healthPath }}

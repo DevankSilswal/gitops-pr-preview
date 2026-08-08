@@ -101,6 +101,27 @@ spec:
               value: "__TLS_ENABLED__"
             - name: ingress.tls.clusterIssuer
               value: "__TLS_ISSUER__"
+            # Every per-environment secret is derived from this plus the
+            # environment's own identity, so nothing is generated at render
+            # time and CI can compute the preview password without ever
+            # talking to the cluster. Generated once at bootstrap.
+            - name: secretSalt
+              value: "__SECRET_SALT__"
+            # Opted into per repository, in .github/preview.yml. Off unless
+            # asked for: most applications do not need one, and a Postgres per
+            # pull request is the single most expensive thing this chart can
+            # place on a one-node cluster.
+            - name: database.enabled
+              value: "{{database}}"
+      # bcrypt salts randomly, so the basic-auth Secret renders to a different
+      # ciphertext every time even though the password behind it is derived and
+      # never changes. Without this, selfHeal would rewrite that Secret on
+      # every reconcile and the Application would never report Synced.
+      ignoreDifferences:
+        - group: ""
+          kind: Secret
+          jsonPointers:
+            - /data/auth
       destination:
         server: https://kubernetes.default.svc
         namespace: "{{slug}}-pr-{{number}}"
