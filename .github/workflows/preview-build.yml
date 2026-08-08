@@ -79,15 +79,41 @@ on:
         description: >-
           How many environments this repository may hold at once. The cluster
           is shared, so a repository with thirty open pull requests would
-          otherwise take capacity everyone else needs.
+          otherwise take capacity everyone else needs. Four repositories at
+          this cap reach the point where TooManyPreviewEnvironments fires; see
+          docs/capacity.md.
         required: false
-        default: 5
+        default: 3
         type: number
       fail-on-vulnerabilities:
         description: 'Fail the build on fixable HIGH or CRITICAL findings'
         required: false
         default: true
         type: boolean
+      preview-test:
+        description: >-
+          A command to run against the live preview URL once it answers. The
+          URL is in $PREVIEW_URL, and the credentials in $PREVIEW_USER and
+          $PREVIEW_PASSWORD. A non-zero exit fails the check, which is what
+          turns a preview from a link somebody might click into evidence the
+          change works. Empty skips it.
+        required: false
+        default: ''
+        type: string
+      preview-test-directory:
+        description: 'Working directory for preview-test'
+        required: false
+        default: '.'
+        type: string
+    secrets:
+      preview-secret-salt:
+        description: >-
+          The cluster's secret salt, from bootstrap-cluster.sh. Preview
+          environments are password-protected and the password is derived from
+          this rather than stored, so CI needs the same value to tell the
+          reviewer what it is. Without it the environment still deploys — the
+          chart turns auth off when it has no salt either.
+        required: false
     outputs:
       image:
         description: 'Full image repository that was published to'
@@ -95,6 +121,18 @@ on:
       tag:
         description: 'Tag that was published'
         value: ${{ jobs.build.outputs.tag }}
+      url:
+        description: 'Preview URL, if one was advertised'
+        value: ${{ jobs.build.outputs.url }}
+      ready:
+        description: 'Whether the environment answered 200 before the timeout'
+        value: ${{ jobs.build.outputs.ready }}
+      provisioning-seconds:
+        description: >-
+          Seconds from the pull request being opened to its environment serving
+          200. This is the platform's own SLI — the promise it makes is "open a
+          pull request, get a working URL", and this is that promise measured.
+        value: ${{ jobs.build.outputs.provisioning_seconds }}
 
 jobs:
   build:
@@ -108,6 +146,9 @@ jobs:
     outputs:
       image: ${{ steps.meta.outputs.image }}
       tag: ${{ steps.meta.outputs.tag }}
+      url: ${{ steps.health.outputs.url }}
+      ready: ${{ steps.health.outputs.ready }}
+      provisioning_seconds: ${{ steps.health.outputs.provisioning_seconds }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -274,21 +315,73 @@ jobs:
       # not — so a link posted immediately is a link that does not work yet.
       # This is the same mistake that made the end-to-end test flaky: treating
       # "something responded" as "it is ready".
+      # The preview password, derived rather than fetched.
+      #
+      # The chart computes the same value from the same salt and the same
+      # environment identity, so this can tell the reviewer the password
+      # without CI ever holding cluster credentials — which is the property the
+      # whole pipeline is built around. Keep the formula in step with
+      # preview-app.derivedSecret in charts/preview-app/templates/_helpers.tpl.
+      - name: Derive the preview credentials
+        id: creds
+        if: github.event_name == 'pull_request' && inputs.preview-base-host != ''
+        env:
+          SALT: ${{ secrets.preview-secret-salt }}
+          ENVIRONMENT: "${{ steps.meta.outputs.slug }}-pr-${{ github.event.number }}"
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SALT:-}" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "no salt supplied; the environment will be open and this will say so"
+            exit 0
+          fi
+          PASSWORD=$(printf '%s|%s|%s|%s' "$SALT" "$ENVIRONMENT" "$PR_NUMBER" "basic-auth" \
+            | sha256sum | cut -c1-20)
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "username=preview" >> "$GITHUB_OUTPUT"
+          # Masked so it cannot appear in a log line, then written where only
+          # the pull request comment step reads it.
+          echo "::add-mask::$PASSWORD"
+          echo "password=$PASSWORD" >> "$GITHUB_OUTPUT"
+
       - name: Wait for the environment to answer
         id: health
         if: github.event_name == 'pull_request' && inputs.preview-base-host != ''
         env:
           URL: "${{ inputs.scheme }}://${{ steps.meta.outputs.slug }}-pr-${{ github.event.number }}.${{ inputs.preview-base-host }}"
+          AUTH_ON: ${{ steps.creds.outputs.enabled }}
+          PREVIEW_USER: ${{ steps.creds.outputs.username }}
+          PREVIEW_PASSWORD: ${{ steps.creds.outputs.password }}
+          # When the pull request was opened, not when this job started. The
+          # difference is the build, and the build is part of what a reviewer
+          # waits through — measuring from job start would flatter the platform
+          # by excluding its largest component.
+          OPENED_AT: ${{ github.event.pull_request.created_at }}
         run: |
           set -uo pipefail
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
+          CURL_AUTH=()
+          if [ "$AUTH_ON" = "true" ]; then
+            CURL_AUTH=(--user "${PREVIEW_USER}:${PREVIEW_PASSWORD}")
+          fi
+
+          opened_epoch=$(date -u -d "$OPENED_AT" +%s 2>/dev/null || echo 0)
+
           deadline=$(( SECONDS + ${{ inputs.health-timeout-seconds }} ))
           while [ $SECONDS -lt $deadline ]; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo 000)
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${CURL_AUTH[@]}" "$URL" || true)
             if [ "$code" = "200" ]; then
               echo "ready=true" >> "$GITHUB_OUTPUT"
-              echo "answered 200 after ${SECONDS}s"
+              # The SLI: pull request opened -> URL serving. Recorded even on a
+              # push to an existing pull request, where it measures a
+              # redeployment rather than a first provision; slo-report.rb
+              # separates the two.
+              if [ "$opened_epoch" -gt 0 ]; then
+                echo "provisioning_seconds=$(( $(date -u +%s) - opened_epoch ))" >> "$GITHUB_OUTPUT"
+              fi
+              echo "answered 200 after ${SECONDS}s of waiting"
               exit 0
             fi
             sleep 10
@@ -297,7 +390,27 @@ jobs:
           # Not a build failure: the image is published and correct, and ArgoCD
           # may still be converging. The comment says so rather than lying.
           echo "ready=false" >> "$GITHUB_OUTPUT"
-          echo "no 200 within ${{ inputs.health-timeout-seconds }}s (last: $code)"
+          echo "no 200 within ${{ inputs.health-timeout-seconds }}s (last: ${code:-none})"
+
+      # Runs the repository's own tests against the environment that is
+      # actually serving, not against a copy of it on a runner.
+      #
+      # This is what turns the preview into a gate. Without it a reviewer is
+      # told "here is a link" and has to work out for themselves whether
+      # anything is broken; with it, the pull request carries a check that
+      # either passed against a real deployment or did not.
+      - name: Run the preview smoke tests against the live environment
+        if: >-
+          github.event_name == 'pull_request' &&
+          inputs.preview-base-host != '' &&
+          inputs.preview-test != '' &&
+          steps.health.outputs.ready == 'true'
+        working-directory: ${{ inputs.preview-test-directory }}
+        env:
+          PREVIEW_URL: ${{ steps.health.outputs.url }}
+          PREVIEW_USER: ${{ steps.creds.outputs.username }}
+          PREVIEW_PASSWORD: ${{ steps.creds.outputs.password }}
+        run: ${{ inputs.preview-test }}
 
       # A Deployment, so the environment appears in the pull request's own
       # timeline and in the repository's Environments tab — with a native
@@ -355,10 +468,16 @@ jobs:
           PREVIEW_URL: ${{ steps.health.outputs.url }}
           READY: ${{ steps.health.outputs.ready }}
           IMAGE: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+          AUTH_ON: ${{ steps.creds.outputs.enabled }}
+          PREVIEW_USER: ${{ steps.creds.outputs.username }}
+          PREVIEW_PASSWORD: ${{ steps.creds.outputs.password }}
+          PROVISIONING_SECONDS: ${{ steps.health.outputs.provisioning_seconds }}
         with:
           script: |
             const marker = '<!-- preview-environment -->';
             const ready = process.env.READY === 'true';
+            const authOn = process.env.AUTH_ON === 'true';
+            const seconds = Number(process.env.PROVISIONING_SECONDS);
 
             // Say which of the two it is. A link that has been checked and a
             // link that has not are different things, and a reviewer clicking
@@ -374,11 +493,48 @@ jobs:
               ready
                 ? 'Checked before posting: it returned 200.'
                 : 'The image is published and ArgoCD is still converging. Give it a minute; if it stays down, the environment could not start.',
+            ];
+
+            // The password is delivered here on purpose. Whoever can read this
+            // pull request can open the environment, and whoever cannot, cannot
+            // — so GitHub's existing permissions answer the access question and
+            // the platform stores no user list of its own.
+            if (authOn) {
+              body.push(
+                '',
+                '<details><summary>Credentials</summary>',
+                '',
+                '```',
+                `user:     ${process.env.PREVIEW_USER}`,
+                `password: ${process.env.PREVIEW_PASSWORD}`,
+                '```',
+                '',
+                'Environments are private and marked `noindex`, so this link is not',
+                'reachable by anyone who cannot see this pull request, and not',
+                'indexable by search engines.',
+                '</details>',
+              );
+            } else {
+              body.push(
+                '',
+                '> This environment is **open to anyone with the link** — the cluster has',
+                '> no secret salt configured, so no password could be derived.',
+              );
+            }
+
+            body.push(
               '',
               'Image `' + process.env.IMAGE + '`',
+            );
+
+            if (Number.isFinite(seconds) && seconds > 0) {
+              body.push(`Ready ${seconds}s after this pull request was opened.`);
+            }
+
+            body.push(
               '',
               'Removed automatically when this pull request closes.',
-            ].join('\n');
+            );
 
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
