@@ -101,6 +101,40 @@ spec:
               value: "__TLS_ENABLED__"
             - name: ingress.tls.clusterIssuer
               value: "__TLS_ISSUER__"
+            # When true the cluster already serves a certificate covering this
+            # hostname, so the environment asks for none. Per-host issuance on
+            # a shared registered domain spends a Let's Encrypt budget other
+            # people are spending too.
+            - name: ingress.tls.wildcard
+              value: "__TLS_WILDCARD__"
+            # Every per-environment secret is derived from this plus the
+            # environment's own identity, so nothing is generated at render
+            # time and CI can compute the preview password without ever
+            # talking to the cluster. Generated once at bootstrap.
+            - name: secretSalt
+              value: "__SECRET_SALT__"
+            # Opted into per repository, in .github/preview.yml. Off unless
+            # asked for: most applications do not need one, and a Postgres per
+            # pull request is the single most expensive thing this chart can
+            # place on a one-node cluster.
+            - name: database.enabled
+              value: "{{database}}"
+            # A background process beside the web one — a queue consumer, a
+            # scheduler. Same image, different command. An environment that can
+            # only hold the web tier is a preview of half the change.
+            - name: worker.enabled
+              value: "{{workerEnabled}}"
+            - name: worker.command
+              value: "{{workerCommand}}"
+      # bcrypt salts randomly, so the basic-auth Secret renders to a different
+      # ciphertext every time even though the password behind it is derived and
+      # never changes. Without this, selfHeal would rewrite that Secret on
+      # every reconcile and the Application would never report Synced.
+      ignoreDifferences:
+        - group: ""
+          kind: Secret
+          jsonPointers:
+            - /data/auth
       destination:
         server: https://kubernetes.default.svc
         namespace: "{{slug}}-pr-{{number}}"

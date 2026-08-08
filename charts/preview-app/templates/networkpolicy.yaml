@@ -48,6 +48,14 @@ spec:
 
     # The public internet, with every private range carved out. 169.254.0.0/16
     # is the important one: it carries the cloud metadata service.
+    #
+    # Restricted to specific ports as well as specific addresses. Carving out
+    # the private ranges stops a preview reaching the cluster and the node;
+    # it does nothing about a preview reaching *outward* on any port it likes,
+    # and the node's address is what anyone abused by that would see in their
+    # logs. HTTP, HTTPS and DNS are what fetching a dependency or calling an
+    # API needs. Sending mail, scanning SSH and holding a command-and-control
+    # channel on an arbitrary port are not.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -56,4 +64,19 @@ spec:
               - 172.16.0.0/12
               - 192.168.0.0/16
               - 169.254.0.0/16
+      ports:
+        {{- toYaml .Values.networkPolicy.egressPorts | nindent 8 }}
+
+  {{- if .Values.database.enabled }}
+    # This environment's own database, which has its own policy admitting only
+    # these pods. Same namespace, so the private-range exclusion above would
+    # otherwise deny it.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "preview-app.databaseSelectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.database.port }}
+          protocol: TCP
+  {{- end }}
 {{- end }}

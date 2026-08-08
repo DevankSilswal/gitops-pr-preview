@@ -37,6 +37,21 @@ fi
 echo "==> Checking cluster connectivity"
 kubectl cluster-info >/dev/null
 
+# The base hostname every preview URL hangs off, decided here because both the
+# certificate and the manifests need it and they are set up at opposite ends of
+# this script.
+#
+# With a DuckDNS domain, that domain. Without one, nip.io derived from the node
+# address — and in dash form, because nip.io splits on dashes as well as dots
+# when it looks for an address, so a dotted IP after a label like `pr-1` is
+# misread: pr-1.127.0.0.1.nip.io resolves to 1.127.0.0.
+if [[ -n "${DUCKDNS_DOMAIN:-}" ]]; then
+  PREVIEW_BASE_HOST="$DUCKDNS_DOMAIN"
+else
+  PREVIEW_BASE_HOST="$(echo "$NODE_IP" | tr '.' '-').nip.io"
+fi
+echo "    preview hostnames will be <slug>-pr-<number>.$PREVIEW_BASE_HOST"
+
 echo "==> Installing ingress-nginx"
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
 helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true
@@ -47,24 +62,29 @@ if [[ -n "${DEV_CLUSTER:-}" ]]; then
   # kind has no load balancer implementation, so the controller binds the
   # node's ports directly. scripts/kind-cluster.yaml maps those to the host,
   # which makes nip.io hostnames resolve exactly as they do in production.
+  # Each element is quoted whole. Unquoted, `key[0]=value` inside an array
+  # literal reads as an indexed assignment rather than as one argument — SC2191,
+  # and genuinely ambiguous to anyone reading it. These are helm arguments, not
+  # array indices.
   INGRESS_ARGS=(
-    --set controller.hostPort.enabled=true
-    --set controller.service.type=NodePort
+    --set 'controller.hostPort.enabled=true'
+    --set 'controller.service.type=NodePort'
     # nodeSelector values are strings in the Kubernetes API. Plain --set sends
     # a bare true, which the API server rejects as a type error.
-    --set-string controller.nodeSelector."ingress-ready"=true
-    --set-string controller.tolerations[0].key=node-role.kubernetes.io/control-plane
-    --set-string controller.tolerations[0].operator=Exists
-    --set-string controller.tolerations[0].effect=NoSchedule
+    --set-string 'controller.nodeSelector.ingress-ready=true'
+    --set-string 'controller.tolerations[0].key=node-role.kubernetes.io/control-plane'
+    --set-string 'controller.tolerations[0].operator=Exists'
+    --set-string 'controller.tolerations[0].effect=NoSchedule'
   )
 else
-  INGRESS_ARGS=(--set controller.service.type=LoadBalancer)
+  INGRESS_ARGS=(--set 'controller.service.type=LoadBalancer')
 fi
 
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx --create-namespace \
   "${INGRESS_ARGS[@]}" \
   --set controller.ingressClassResource.default=true \
+  --set controller.config.global-allowed-response-headers=X-Robots-Tag \
   --wait --timeout 10m
 
 if [[ -n "${ACME_EMAIL:-}" || -n "${WITH_TLS:-}" ]]; then
@@ -85,6 +105,49 @@ if [[ -n "${ACME_EMAIL:-}" || -n "${WITH_TLS:-}" ]]; then
       "$REPO_ROOT/deploy/platform/cluster-issuers.yaml" | kubectl apply -f -
   else
     echo "==> Skipping Let's Encrypt issuers (set ACME_EMAIL to create them)"
+  fi
+
+  # One certificate for every hostname this cluster will ever serve, instead of
+  # one per pull request. See deploy/platform/wildcard-tls.yaml for why that
+  # matters more than it sounds: the per-host path spends a rate limit that is
+  # shared with every other user of the same registered domain.
+  if [[ -n "${DUCKDNS_TOKEN:-}" && -n "${ACME_EMAIL:-}" ]]; then
+    echo "==> Installing the DuckDNS DNS-01 solver"
+    helm repo add duckdns https://ebrianne.github.io/helm-charts >/dev/null 2>&1 || true
+    helm repo update >/dev/null
+    helm upgrade --install cert-manager-webhook-duckdns duckdns/cert-manager-webhook-duckdns \
+      --namespace cert-manager \
+      --set duckdns.token="$DUCKDNS_TOKEN" \
+      --set clusterIssuer.production.create=false \
+      --set clusterIssuer.staging.create=false \
+      --wait --timeout 5m
+
+    # The solver reads the token from a secret in its own namespace; the chart
+    # above creates one, and this makes the name match what the issuer asks for
+    # regardless of what the chart called it.
+    kubectl -n cert-manager create secret generic duckdns-token \
+      --from-literal=token="$DUCKDNS_TOKEN" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    echo "==> Requesting the wildcard certificate for *.$PREVIEW_BASE_HOST"
+    sed -e "s|__ACME_EMAIL__|$ACME_EMAIL|g" \
+        -e "s|__PREVIEW_BASE_HOST__|$PREVIEW_BASE_HOST|g" \
+      "$REPO_ROOT/deploy/platform/wildcard-tls.yaml" | kubectl apply -f -
+
+    # Serve it for any host that does not bring its own certificate — which,
+    # once the wildcard exists, is every preview environment.
+    echo "==> Pointing ingress-nginx at the wildcard"
+    helm upgrade ingress-nginx ingress-nginx/ingress-nginx \
+      --namespace ingress-nginx --reuse-values \
+      --set controller.extraArgs.default-ssl-certificate=ingress-nginx/preview-wildcard-tls \
+      --wait --timeout 10m
+
+    WILDCARD_TLS=true
+    echo "    a wildcard covers every preview; none will request its own"
+  else
+    WILDCARD_TLS=false
+    [[ -n "${ACME_EMAIL:-}" ]] && \
+      echo "==> No DUCKDNS_TOKEN — falling back to a certificate per hostname"
   fi
 else
   echo "==> Skipping cert-manager (set ACME_EMAIL, or WITH_TLS for self-signed)"
@@ -155,6 +218,42 @@ else
   echo "==> No WEBHOOK_SECRET set — GitHub pushes will be rejected, polling still works"
 fi
 
+# The ApplicationSet controller builds its webhook handler at startup, and
+# needs server.secretkey to do it — which argocd-server generates on first run.
+# On a fresh cluster the controller loses that race, logs
+# "server.secretkey is missing", and then runs indefinitely with nothing bound
+# to the port its own Service advertises. Restarting it once the key exists is
+# the whole fix, and finding that out took an hour of 502s.
+if [[ -n "${WEBHOOK_SECRET:-}" ]]; then
+  echo "==> Restarting the ApplicationSet controller so it binds its webhook"
+  kubectl -n argocd rollout restart deploy/argocd-applicationset-controller >/dev/null
+  kubectl -n argocd rollout status deploy/argocd-applicationset-controller --timeout=5m >/dev/null
+fi
+
+# Cluster-wide secret material, from which every per-environment secret — the
+# preview password, the ephemeral database password — is derived.
+#
+# Read back if it already exists rather than regenerated, because rotating it
+# would silently invalidate every preview password already posted on an open
+# pull request. Re-running this script has to stay safe, which is a property
+# that has been verified four times over and is easy to break here.
+echo "==> Ensuring the per-environment secret salt exists"
+PREVIEW_SECRET_SALT="$(kubectl -n argocd get secret preview-secret-salt \
+  -o jsonpath='{.data.salt}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+
+if [[ -z "$PREVIEW_SECRET_SALT" ]]; then
+  # openssl is present on any machine that got this far; head -c on
+  # /dev/urandom would do as well.
+  PREVIEW_SECRET_SALT="$(openssl rand -hex 32)"
+  kubectl create secret generic preview-secret-salt \
+    --namespace argocd \
+    --from-literal=salt="$PREVIEW_SECRET_SALT" >/dev/null
+  echo "    generated a new salt"
+else
+  echo "    reusing the existing salt, so passwords already posted stay valid"
+fi
+export PREVIEW_SECRET_SALT
+
 echo "==> Storing the GitHub token for the pull request generator"
 kubectl create secret generic github-token \
   --namespace argocd \
@@ -162,11 +261,6 @@ kubectl create secret generic github-token \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> Applying ArgoCD manifests for node=$NODE_IP"
-# nip.io splits on dashes as well as dots when it looks for an address, so a
-# dotted IP after a label like `pr-1` is misread: pr-1.127.0.0.1.nip.io
-# resolves to 1.127.0.0. Writing the address in dash form removes the
-# ambiguity and keeps the readable pr-<number> prefix.
-PREVIEW_BASE_HOST="$(echo "$NODE_IP" | tr '.' '-').nip.io"
 
 # Preview environments get certificates only if an issuer exists to sign them.
 if [[ -n "${ACME_EMAIL:-}" ]]; then
@@ -196,7 +290,12 @@ fi
 # past, since a malformed one would otherwise show up as an environment that
 # never appears.
 export PREVIEW_BASE_HOST TLS_ENABLED TLS_ISSUER
+# Set above, where the wildcard is requested. Tells the chart not to ask for a
+# certificate of its own.
+export TLS_WILDCARD="${WILDCARD_TLS:-false}"
 export PROD_IMAGE_TAG=latest
+# PREVIEW_SECRET_SALT is already exported above, where it is generated or read
+# back; render-argocd.rb substitutes it into the ApplicationSet.
 
 # Applied in a stated order rather than whatever the glob happens to produce.
 # The project has to exist before anything references it — and alphabetically
@@ -237,6 +336,11 @@ Done.
 Set PREVIEW_BASE_HOST to '$PREVIEW_BASE_HOST' in the repository variables so CI
 can post preview links on pull requests:
   gh variable set PREVIEW_BASE_HOST --body '$PREVIEW_BASE_HOST'
+
+Preview environments are password-protected. CI derives each password from the
+cluster salt, so it needs the same value to post it on the pull request:
+  gh secret set PREVIEW_SECRET_SALT --body "\$(kubectl -n argocd get secret \\
+    preview-secret-salt -o jsonpath='{.data.salt}' | base64 -d)"
 
 Label a pull request 'preview' to create your first environment.
 EOF

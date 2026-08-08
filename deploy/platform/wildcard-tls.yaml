@@ -1,0 +1,71 @@
+# One certificate for every preview environment, ever.
+#
+# The problem this removes:
+#
+# Preview hostnames churn faster than almost any other workload — a certificate
+# per pull request, per push, forever. Let's Encrypt allows 50 certificates per
+# registered domain per week, and `nip.io` is one registered domain shared with
+# everybody else using it. So the rate limit that would eventually stop every
+# preview here from getting a certificate is not only reachable, it is not even
+# under this operator's control: somebody else's traffic can exhaust it.
+#
+# That is why staging was the default for so long, and why the README carried a
+# note about browsers showing a warning. It was never a configuration mistake;
+# it was the only safe setting given per-host issuance on a shared domain.
+#
+# A single wildcard removes the whole class. `*.<base>` covers every hostname
+# this cluster will ever serve, issued once and renewed every sixty days —
+# three certificates a year against a limit of fifty a week. Preview
+# environments then request no certificate at all: ingress-nginx serves this one
+# for any host that does not bring its own, via `default-ssl-certificate`.
+#
+# A wildcard cannot be issued over HTTP-01 — proving control of `*.example.com`
+# means proving control of its DNS, not of one web server. Hence the DNS-01
+# solver in the issuer below.
+#
+# Placeholders are substituted at apply time by scripts/render-argocd.rb.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-dns
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: __ACME_EMAIL__
+    privateKeySecretRef:
+      name: letsencrypt-dns-account
+    solvers:
+      # DuckDNS, through the community webhook solver, because it is free and
+      # this platform has to survive on nothing. The trade is a dependency on
+      # somebody else's DNS service and a hostname that says `duckdns.org` —
+      # both acceptable next to a rate limit shared with strangers.
+      #
+      # Swapping this for a real domain is a change to this block alone:
+      # cert-manager has built-in DNS-01 solvers for Cloudflare, Route53 and
+      # others, and nothing above or below here knows which one is in use.
+      - dns01:
+          webhook:
+            groupName: acme.duckdns.org
+            solverName: duckdns
+            config:
+              secretName: duckdns-token
+              secretKey: token
+---
+# The certificate itself, in the ingress controller's namespace because that is
+# what serves it. It is not part of any preview release and does not come and
+# go with one — that is the entire point.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: preview-wildcard
+  namespace: ingress-nginx
+spec:
+  secretName: preview-wildcard-tls
+  issuerRef:
+    name: letsencrypt-dns
+    kind: ClusterIssuer
+  # Both the wildcard and the bare hostname: `*.example.com` does not match
+  # `example.com`, and production is served from the base.
+  dnsNames:
+    - "*.__PREVIEW_BASE_HOST__"
+    - "__PREVIEW_BASE_HOST__"

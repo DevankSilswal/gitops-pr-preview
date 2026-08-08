@@ -1,3 +1,7 @@
+# This line is the single source of truth for the Node version. CI reads the
+# major out of it with sed to pick the version it tests against, and
+# package.json's `engines` states the same floor for anyone running locally.
+# Bump it here and both follow.
 FROM node:25-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./

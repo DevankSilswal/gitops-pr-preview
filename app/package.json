@@ -5,7 +5,11 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test server.test.js",
+    "smoke": "node smoke-test.js"
+  },
+  "engines": {
+    "node": ">=25"
   },
   "dependencies": {
     "express": "^5.2.1"

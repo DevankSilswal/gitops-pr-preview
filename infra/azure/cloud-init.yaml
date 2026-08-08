@@ -20,6 +20,21 @@ runcmd:
 
   # k3s ships Traefik by default; we standardise on ingress-nginx so the
   # ingress annotations match what any other Kubernetes cluster expects.
-  - curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --write-kubeconfig-mode 644" sh -
-  - until kubectl get nodes >/dev/null 2>&1; do sleep 5; done
-  - kubectl wait --for=condition=Ready node --all --timeout=300s
+  #
+  # Mode 600, not 644. That kubeconfig is cluster-admin with no expiry, and
+  # 644 hands it to every local account and every process on the box. The
+  # `fetch_kubeconfig` output reads it over SSH with sudo, so nothing needs it
+  # world-readable.
+  #
+  # `k3s kubectl` below rather than plain kubectl: each runcmd entry is its own
+  # shell, so an exported KUBECONFIG would not survive to the next line, and
+  # the file is no longer world-readable for the default one to find.
+  - curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --write-kubeconfig-mode 600" sh -
+  - until k3s kubectl get nodes >/dev/null 2>&1; do sleep 5; done
+  - k3s kubectl wait --for=condition=Ready node --all --timeout=300s
+
+  # k3s comes back on its own after a spot eviction or the nightly shutdown —
+  # the unit is enabled at install — but the platform above it is only correct
+  # if ArgoCD then reconciles. That happens without help: every Application is
+  # driven from git, so a restarted cluster converges to whatever main says.
+  - systemctl enable k3s

@@ -1,0 +1,127 @@
+name: spot-watchdog
+
+# Brings the cluster back after Azure reclaims its spot capacity.
+#
+# The node runs on spot at roughly a tenth of the on-demand price, which is the
+# single largest saving available to this project and the reason it can stay up
+# at all on a student credit. The cost is that Azure can take the capacity back
+# whenever it needs it, and a deallocated VM does not restart itself.
+#
+# That would normally be an unacceptable trade for anything with a public URL.
+# It is acceptable here for a specific, demonstrated reason: this platform
+# already rebuilds itself from git. The VM has been destroyed and recreated
+# with production and every preview environment restored by the bootstrap
+# script alone, and the public IP is static so no hostname changes. An eviction
+# is a strictly easier version of that — the disk survives, so k3s comes back
+# with its own state and ArgoCD reconciles the rest.
+#
+# So the missing piece was never recovery, it was noticing. This is that, on
+# runner minutes that cost nothing, which is the whole reason it is here rather
+# than as something running on the node it is meant to be watching.
+#
+# Setup is one-time and free: an Azure app registration federated to this
+# repository (no client secret), with the Virtual Machine Contributor role on
+# the resource group. See docs/cost.md.
+
+on:
+  schedule:
+    # Every ten minutes. An eviction notice gives 30 seconds, so nothing can
+    # make this seamless; the goal is minutes of downtime rather than however
+    # long until somebody looks.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  watch:
+    if: vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # OIDC federation rather than a stored credential. There is no secret to
+      # leak or rotate, and the token is minted per run and scoped to this
+      # repository.
+      - uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Start the node if it is not running
+        id: check
+        env:
+          RG: ${{ vars.AZURE_RESOURCE_GROUP || 'gitops-k3s-rg' }}
+          VM: ${{ vars.AZURE_VM_NAME || 'gitops-k3s' }}
+          # The nightly shutdown is deliberate, not a fault. Starting the VM
+          # back up ten minutes after the schedule deallocated it would undo
+          # the largest saving this project makes and cost more than the spot
+          # discount saves.
+          QUIET_FROM: ${{ vars.QUIET_HOURS_FROM || '20' }}
+          QUIET_TO: ${{ vars.QUIET_HOURS_TO || '07' }}
+          TZ_NAME: ${{ vars.QUIET_HOURS_TZ || 'Asia/Kolkata' }}
+        run: |
+          set -euo pipefail
+
+          HOUR=$(TZ="$TZ_NAME" date +%H)
+          # Decimal, because 08 and 09 are invalid octal and would abort under
+          # arithmetic expansion.
+          hour=$((10#$HOUR)); from=$((10#$QUIET_FROM)); to=$((10#$QUIET_TO))
+          if [ "$from" -gt "$to" ]; then
+            # The window wraps midnight, which is the normal case for a night.
+            in_quiet=$([ "$hour" -ge "$from" ] || [ "$hour" -lt "$to" ] && echo yes || echo no)
+          else
+            in_quiet=$([ "$hour" -ge "$from" ] && [ "$hour" -lt "$to" ] && echo yes || echo no)
+          fi
+
+          STATE=$(az vm get-instance-view -g "$RG" -n "$VM" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]" -o tsv)
+          echo "power state: $STATE (local hour $HOUR, quiet window $QUIET_FROM-$QUIET_TO: $in_quiet)"
+
+          if [ "$STATE" = "PowerState/running" ]; then
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "node is running"
+            exit 0
+          fi
+
+          if [ "$in_quiet" = "yes" ]; then
+            echo "action=quiet" >> "$GITHUB_OUTPUT"
+            echo "node is down during the scheduled quiet window; leaving it alone"
+            exit 0
+          fi
+
+          echo "node is $STATE outside the quiet window — starting it"
+          az vm start -g "$RG" -n "$VM"
+          echo "action=started" >> "$GITHUB_OUTPUT"
+
+      # k3s restores itself and ArgoCD reconciles the fleet from git, so there
+      # is nothing to redeploy — but a start that leaves the API unreachable is
+      # worth knowing about rather than assuming away.
+      - name: Confirm the cluster is answering again
+        if: steps.check.outputs.action == 'started'
+        env:
+          BASE_HOST: ${{ vars.PREVIEW_BASE_HOST }}
+        run: |
+          set -uo pipefail
+          [ -n "${BASE_HOST:-}" ] || { echo "PREVIEW_BASE_HOST is not set; skipping"; exit 0; }
+
+          for _ in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+              "https://app.${BASE_HOST}/api/health" || true)
+            if [ "$code" = "200" ]; then
+              echo "production answered after restart"
+              exit 0
+            fi
+            sleep 15
+          done
+
+          echo "production did not answer within ten minutes of the node starting" >&2
+          exit 1
+
+      - name: Say what happened
+        if: always()
+        run: |
+          echo "Watchdog result: ${{ steps.check.outputs.action || 'failed before deciding' }}" \
+            >> "$GITHUB_STEP_SUMMARY"
