@@ -84,15 +84,29 @@ example — it asserts the environment reports the pull request it belongs to,
 that the health endpoint is up, and that the protections the platform promises
 are actually in front of it.
 
-### 3. Opt in — nobody needs to approve you
+### 3. Opt in
 
-Add `.github/preview.yml` to your repository:
+Two steps, and the first one is a pull request against this repository.
+
+**Get your owner allowlisted.** Add your GitHub username or organisation to
+`deploy/platform/allowlist.yaml` and open a pull request. That is the whole
+approval: one line, one review.
+
+It exists because a topic is not permission. Discovery searches all of GitHub,
+and anyone can add a topic to their own repository — so without an allowlist,
+any GitHub user could have containers scheduled on this cluster, paid for by
+this cluster's operator and reaching the internet from their address. The
+isolation controls bound what your environment can do; they cannot bound who
+gets to start one.
+
+**Then add `.github/preview.yml` to your repository:**
 
 ```yaml
 port: 8080              # what your application listens on
 healthPath: /healthz    # what the probes should ask for; defaults to /
 image: my-app           # optional; defaults to the repository name
 database: false         # optional; an ephemeral Postgres per pull request
+worker: false           # optional; a background process, e.g. "npm run worker"
 ```
 
 **On `database`.** Setting it true gives each of your pull requests its own
@@ -105,6 +119,16 @@ Storage is ephemeral on purpose: the data resets if the pod restarts. A preview
 database is meant to be reconstructible from your migrations, not accumulated.
 Leave it off unless you need it; it is the most expensive thing the platform
 will schedule for you.
+
+**On `worker`.** Give it a command and you get a second process from the same
+image, with `ROLE=worker` in its environment so one image can branch on it. It
+gets no URL and no Service — nothing should reach a queue consumer from
+outside, so nothing can.
+
+The image is deliberately the same one the web process runs. A worker built
+from a different commit than the page a reviewer is looking at would make the
+environment lie about what it is running, which is the one thing this platform
+will not do.
 
 Then add the topic **`pr-preview`** to the repository (Settings, or the gear
 beside About on the repository page).

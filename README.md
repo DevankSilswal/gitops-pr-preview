@@ -123,7 +123,7 @@ the other half.
 | Registry | GHCR | Free for public images, native GitHub auth |
 | Ingress | ingress-nginx | Routes every `<slug>-pr-<n>` hostname to the right namespace by Host header |
 | DNS | nip.io | Wildcard hostnames with no domain to buy or configure |
-| TLS | cert-manager + Let's Encrypt | Optional, staging issuer by default — preview hostnames churn past the production rate limit |
+| TLS | cert-manager + one wildcard | A certificate per pull request spends a Let's Encrypt budget of 50 per week per *registered* domain — and on `nip.io` that budget is shared with strangers. One wildcard, renewed six times a year, removes the limit rather than managing it |
 | Observability | Prometheus, no operator | Alerts on environments that never become healthy. Grafana and the operator are opt-in — they need four vCPU, which this node does not have |
 | Alerting | GitHub Issues, polled by Actions | Alertmanager costs CPU this node has not got, and would still need a destination. An open issue is a firing alert, closed when it recovers |
 
@@ -213,10 +213,20 @@ Both of the gaps that needed a publicly reachable address are now closed. The pl
 Two ways in, neither of which needs anyone's permission. Both are written up in
 **[docs/onboarding.md](docs/onboarding.md)**.
 
-**On this cluster** — add a workflow call and `.github/preview.yml` to your
-repository, then give it the `pr-preview` topic. An hourly job finds
-repositories carrying that topic and onboards them. No cloud account, no
-Kubernetes, nobody to ask.
+**On this cluster** — open a pull request adding your GitHub owner to
+[`deploy/platform/allowlist.yaml`](deploy/platform/allowlist.yaml), then add a
+workflow call and `.github/preview.yml` to your repository and give it the
+`pr-preview` topic. An hourly job finds repositories carrying that topic whose
+owner is allowed, and onboards them. No cloud account, no Kubernetes, no ticket
+and no meeting — one review by somebody accountable for the machine.
+
+That review is new, and the README used to say "nobody to ask". Discovery
+searched all of GitHub for a topic anyone can add to their own repository, which
+meant any GitHub user could have containers scheduled here, billed to this
+operator's account and egressing from this operator's address. The isolation
+controls bound what a preview can *do*; none of them bound who may start one,
+and that gap ends in a suspended subscription rather than a compromised cluster.
+[ADR 0011](docs/decisions/0011-onboarding-allowlist.md) has the reasoning.
 
 **On your own** — fork it, run `make init` to point the fork at itself, then
 either `make dev-cluster` for a local one or `infra/azure` for a cloud VM.

@@ -24,3 +24,6 @@ tried and put back.
 | [0008](0008-spot-capacity.md) | Spot capacity, and a watchdog off the node |
 | [0009](0009-git-as-metrics-store.md) | Git as the metrics store for the platform's own SLI |
 | [0010](0010-fork-previews.md) | Fork previews via workflow_run, not pull_request_target |
+| [0011](0011-onboarding-allowlist.md) | An allowlist decides who may run code here |
+| [0012](0012-wildcard-tls.md) | One wildcard certificate, not one per pull request |
+| [0013](0013-multi-service-and-scale-to-zero.md) | A worker beside the web process, and why not scale-to-zero |

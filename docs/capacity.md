@@ -55,7 +55,7 @@ Two caveats, and they matter:
 | Environments for this repository | 8 | `preview-lifecycle.yml` `MAX_ENVIRONMENTS` | Same, for the repository that owns the platform |
 | Repositories served | 10 | `discover-repos.rb` and `discover.yml` | Bounds how many repositories can contribute at all |
 | Fleet alert | above 12 | `TooManyPreviewEnvironments` | Notices the aggregate, early |
-| Pods per environment | 4 | chart `quota.hard` | Room for the application, a database, and a rollout |
+| Pods per environment | 6 | chart `quota.hard` | Room for the web process, a worker, a database, and one surge pod during a rollout |
 
 ## Why they do not multiply to something safe
 
