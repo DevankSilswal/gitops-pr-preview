@@ -188,7 +188,7 @@ jobs:
       - name: Lint the shell scripts
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck --severity=warning scripts/*.sh
+          shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh
 
       # The slug is derived in Ruby by discovery, which decides the hostname
       # that exists, and in shell by the build workflow, which decides the one

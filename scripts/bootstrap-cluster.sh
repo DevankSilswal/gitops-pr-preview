@@ -47,18 +47,22 @@ if [[ -n "${DEV_CLUSTER:-}" ]]; then
   # kind has no load balancer implementation, so the controller binds the
   # node's ports directly. scripts/kind-cluster.yaml maps those to the host,
   # which makes nip.io hostnames resolve exactly as they do in production.
+  # Each element is quoted whole. Unquoted, `key[0]=value` inside an array
+  # literal reads as an indexed assignment rather than as one argument — SC2191,
+  # and genuinely ambiguous to anyone reading it. These are helm arguments, not
+  # array indices.
   INGRESS_ARGS=(
-    --set controller.hostPort.enabled=true
-    --set controller.service.type=NodePort
+    --set 'controller.hostPort.enabled=true'
+    --set 'controller.service.type=NodePort'
     # nodeSelector values are strings in the Kubernetes API. Plain --set sends
     # a bare true, which the API server rejects as a type error.
-    --set-string controller.nodeSelector."ingress-ready"=true
-    --set-string controller.tolerations[0].key=node-role.kubernetes.io/control-plane
-    --set-string controller.tolerations[0].operator=Exists
-    --set-string controller.tolerations[0].effect=NoSchedule
+    --set-string 'controller.nodeSelector.ingress-ready=true'
+    --set-string 'controller.tolerations[0].key=node-role.kubernetes.io/control-plane'
+    --set-string 'controller.tolerations[0].operator=Exists'
+    --set-string 'controller.tolerations[0].effect=NoSchedule'
   )
 else
-  INGRESS_ARGS=(--set controller.service.type=LoadBalancer)
+  INGRESS_ARGS=(--set 'controller.service.type=LoadBalancer')
 fi
 
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
