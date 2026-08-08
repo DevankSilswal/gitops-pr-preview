@@ -1,11 +1,14 @@
 SHELL := /usr/bin/env bash
 CHART := charts/preview-app
-DEMO_HOST ?= pr-1.127.0.0.1.nip.io
+# Dash form, not dots. nip.io splits on dashes as well as dots when it looks
+# for an address, so pr-1.127.0.0.1.nip.io resolves to 1.127.0.0 — the bug
+# every preview URL hit before the address was written this way.
+DEMO_HOST ?= pr-1.127-0-0-1.nip.io
 
 KIND_CLUSTER := gitops-preview
 
 .DEFAULT_GOAL := help
-.PHONY: help init test lint render validate tf-validate workflow-scripts slugs alerts e2e bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
+.PHONY: help init test lint render validate tf-validate workflow-scripts slugs alerts shellcheck slo e2e chaos bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -40,10 +43,17 @@ workflow-scripts: ## Syntax-check the JavaScript embedded in workflows
 alerts: ## Unit-test the Prometheus alert rules
 	./scripts/check-alerts.sh
 
-slugs: ## Check the Ruby and shell slug derivations agree
+slugs: ## Check all three slug derivations agree
 	./scripts/check-slug-agreement.sh
 
-validate: test lint workflow-scripts slugs alerts tf-validate ## Everything that can be checked without a cluster
+shellcheck: ## Lint the shell scripts
+	@command -v shellcheck >/dev/null || { echo "shellcheck is not installed (brew install shellcheck)"; exit 1; }
+	shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh
+
+slo: ## Report provisioning latency against the objective
+	@./scripts/slo-report.rb
+
+validate: test lint workflow-scripts slugs alerts shellcheck tf-validate ## Everything that can be checked without a cluster
 	@echo "All offline checks passed."
 
 bootstrap: ## Install the platform onto the cluster in the current kube context
@@ -54,8 +64,20 @@ e2e: ## Run the end-to-end test against a throwaway kind cluster
 	@test -n "$(IMAGE_TAG)" || { echo "usage: make e2e IMAGE_TAG=main-<sha>"; exit 1; }
 	kind create cluster --name e2e --config scripts/kind-cluster.yaml
 	@kubectl config use-context kind-e2e >/dev/null
-	-./scripts/e2e-test.sh ghcr.io/devanksilswal/preview-app $(IMAGE_TAG)
-	kind delete cluster --name e2e
+	@# The cluster is deleted either way, but the test's exit status is what
+	@# this target reports. A leading `-` would clean up and then claim success
+	@# regardless, which is the silent green this repository exists to avoid.
+	@status=0; ./scripts/e2e-test.sh ghcr.io/devanksilswal/preview-app $(IMAGE_TAG) || status=$$?; \
+		kind delete cluster --name e2e; \
+		exit $$status
+
+chaos: ## Break a preview environment on purpose and measure the recovery
+	@test -n "$(IMAGE_TAG)" || { echo "usage: make chaos IMAGE_TAG=main-<sha>"; exit 1; }
+	kind create cluster --name chaos --config scripts/kind-cluster.yaml
+	@kubectl config use-context kind-chaos >/dev/null
+	@status=0; ./scripts/chaos-test.sh ghcr.io/devanksilswal/preview-app $(IMAGE_TAG) || status=$$?; \
+		kind delete cluster --name chaos; \
+		exit $$status
 
 dev-cluster: ## Create a local kind cluster with ports 80 and 443 mapped
 	kind create cluster --name $(KIND_CLUSTER) --config scripts/kind-cluster.yaml
