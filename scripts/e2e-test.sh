@@ -71,9 +71,29 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --set controller.config.global-allowed-response-headers=X-Robots-Tag \
   --wait --timeout 6m >/dev/null
 
+# The namespace comes from the chart, exactly as it does in production.
+#
+# This used to be `helm --create-namespace`, which meant *helm* created a plain
+# namespace and templates/namespace.yaml never rendered — so the Pod Security
+# Admission labels it carries were never applied, and the test was exercising a
+# topology no cluster actually runs. It reported everything else correctly and
+# quietly proved nothing about admission.
+#
+# ArgoCD sets namespace.create=true and deliberately does not use
+# CreateNamespace=true, so the chart owns the namespace and pruning can remove
+# it. Rendering that one template and applying it reproduces that here, and
+# proves the labels in it are right rather than assuming so.
+echo "==> Creating the namespace from the chart's own template"
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+helm template "$RELEASE" "$REPO_ROOT/charts/preview-app" \
+  --namespace "$NS" \
+  --set namespace.create=true \
+  --set ingress.host="$HOST" \
+  --show-only templates/namespace.yaml | kubectl apply -f - >/dev/null
+
 echo "==> Deploying a preview environment"
 helm install "$RELEASE" "$REPO_ROOT/charts/preview-app" \
-  --namespace "$NS" --create-namespace \
+  --namespace "$NS" \
   --set image.repository="$IMAGE_REPO" \
   --set image.tag="$IMAGE_TAG" \
   --set environment=pr-1 \
