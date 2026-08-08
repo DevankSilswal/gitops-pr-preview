@@ -51,6 +51,31 @@ An environment exists exactly while its pull request carries the `preview` label
 
 That matters because the obvious alternative, a cron job that deletes stale namespaces, fights the controller: the ApplicationSet would notice the Application missing and immediately recreate it. Expressing expiry as a change in desired state means the two cooperate instead. Re-adding the label brings the environment back.
 
+### Previews are private, and prove they work
+
+Two things separate a preview environment that is useful from one that is a
+demo.
+
+**It is not public.** Every environment sits behind a password, and every
+response carries `X-Robots-Tag: noindex`. The password is *derived* — from a
+cluster-wide salt and the environment's own identity — rather than generated and
+stored, so CI can compute it and post it in the pull request comment without
+ever holding cluster credentials. Whoever can read the pull request can open the
+environment; whoever cannot, cannot. GitHub's permissions answer the access
+question, and the platform keeps no user list of its own.
+
+**It is checked before it is offered.** Once the environment answers, the
+repository's own smoke tests run against the live URL and report as a check on
+the pull request. So the reviewer is not handed a link and left to work out
+whether anything is broken — merging is a decision backed by tests that ran
+against a real deployment of that commit.
+
+Applications that need data can ask for `database: true` and get an ephemeral
+Postgres created and destroyed with the environment. That is the one place this
+is straightforwardly better than the commercial platforms rather than equivalent
+— they share one branch database across every preview, so two pull requests with
+conflicting migrations corrupt each other's review.
+
 ### Preview environments are hostile by default
 
 A preview environment runs unreviewed code, in many cases from a repository this platform's operator does not control. Treating that as trusted is the mistake this design is built around avoiding.
@@ -60,12 +85,39 @@ A preview environment runs unreviewed code, in many cases from a repository this
 - **Environments cannot reach each other.** A NetworkPolicy admits only the ingress controller and permits egress to DNS and the public internet with the private ranges carved out, including the link-local metadata service that hands instance credentials to anything that asks.
 - **One environment cannot starve the rest.** A ResourceQuota caps each namespace and a LimitRange supplies defaults, so a pull request that leaks memory or asks for ten replicas is refused rather than allowed to take the node down.
 - **The container holds nothing it does not need.** It runs as a fixed non-root UID on a read-only root filesystem with all capabilities dropped, and npm is deleted from the runtime image — nothing there invokes it, and its bundled dependencies were the source of every CRITICAL the image scan reported.
+- **Egress is limited by port as well as by address.** Carving out the private ranges stops a preview reaching the cluster; it does nothing about a preview reaching *outward* on any port it likes, with the node's address as the source anyone abused by it would see. DNS, HTTP and HTTPS are what fetching a dependency needs. Sending mail, scanning SSH and holding a command-and-control channel on an arbitrary port are not.
+
+None of that is asserted on trust. Every claim above is a behavioural assertion
+in `scripts/e2e-test.sh`, run on a real cluster on every commit: a pod in
+another namespace tries to reach the environment and is timed out, the metadata
+service is requested from inside the pod and is not reachable, an oversized pod
+is submitted and refused, a privileged pod is submitted and rejected by
+admission. These used to be `kubectl get networkpolicy | grep -q .`, which an
+empty policy passes.
+
+### It measures itself
+
+The promise is "open a pull request, get a working URL". That is an SLI, so it
+is measured: seconds from the pull request opening to the environment serving
+200, recorded per environment into `metrics/provisioning.jsonl` and reported
+against an objective of 95% within 120 seconds.
+
+Git is the datastore, which needs no time-series database on a node that cannot
+afford one, and is the same argument the rest of the project makes about state.
+`make slo` prints the current percentiles and how much error budget is left.
+
+Failures are induced deliberately rather than only being waited for.
+`make chaos` deletes the pod, deletes the Deployment, rolls out an image tag
+that cannot exist, and deletes the Service — timing the recovery each time, and
+asserting that a failing rollout never takes the environment down. It runs
+weekly. `docs/runbook.md` lists the failures that happened by accident; this is
+the other half.
 
 ## Components
 
 | Piece | Choice | Reason |
 |---|---|---|
-| Cluster | k3s on a single Azure VM | Nothing here needs managed Kubernetes, and one node keeps a student budget alive. The bootstrap script takes only a node address, so nothing above it knows which cloud it is on |
+| Cluster | k3s on a single Azure **Spot** VM | Nothing here needs managed Kubernetes, and one node keeps a student budget alive. Spot is a tenth of the price and is affordable only because the platform already rebuilds itself from git; a scheduled job on free GitHub runners restarts it after an eviction. See [docs/cost.md](docs/cost.md) for what each lever is worth |
 | GitOps | ArgoCD + ApplicationSet PR generator | The PR generator is what makes per-PR environments declarative rather than scripted |
 | CI | GitHub Actions | Builds and pushes images; never talks to the cluster directly |
 | Registry | GHCR | Free for public images, native GitHub auth |
@@ -73,6 +125,7 @@ A preview environment runs unreviewed code, in many cases from a repository this
 | DNS | nip.io | Wildcard hostnames with no domain to buy or configure |
 | TLS | cert-manager + Let's Encrypt | Optional, staging issuer by default — preview hostnames churn past the production rate limit |
 | Observability | Prometheus, no operator | Alerts on environments that never become healthy. Grafana and the operator are opt-in — they need four vCPU, which this node does not have |
+| Alerting | GitHub Issues, polled by Actions | Alertmanager costs CPU this node has not got, and would still need a destination. An open issue is a firing alert, closed when it recovers |
 
 CI builds artifacts; ArgoCD deploys them. The pipeline holds no cluster credentials — the cluster pulls its own desired state from git. That separation is the point of GitOps.
 
@@ -93,6 +146,12 @@ deploy/platform/observability/                 Prometheus values and Grafana das
 infra/azure/                            Terraform for the Azure VM running k3s
 scripts/bootstrap-cluster.sh            One-shot cluster setup
 scripts/e2e-test.sh                     Preview environment tested on a real cluster
+scripts/chaos-test.sh                   Failures induced deliberately, recovery timed
+scripts/slo-report.rb                   Provisioning latency against the objective
+metrics/provisioning.jsonl              One measurement per environment, appended by CI
+docs/decisions/                         Why it is shaped this way, and what was rejected
+docs/capacity.md                        How many environments fit, and where each limit lives
+docs/cost.md                            What it costs, and the three levers that matter
 docs/onboarding.md                      How another repository adopts this
 docs/runbook.md                         Every failure this platform has actually produced
 ```
@@ -133,6 +192,12 @@ Run against a live Kubernetes cluster, driving a real GitHub pull request, pulli
 | The whole cluster rebuilds from code | The VM was destroyed and recreated by Terraform; the bootstrap script and ArgoCD restored production and every preview environment with no manual step, and the static IP kept every URL working |
 | Infrastructure code matches reality | `terraform plan` reports no changes — earlier it wanted to replace the VM, because a fix had been applied by hand and only later written down |
 | Production survives its own rollout | Two replicas, `maxUnavailable: 0`, and a disruption budget that renders only above one replica |
+| Isolation is asserted, not assumed | A pod in another namespace is timed out reaching the environment, on every commit — not once, by hand |
+| Quotas and admission refuse things | An oversized pod and a privileged pod are both submitted and both rejected, in CI |
+| Previews are private | 401 without credentials; 200 with the password derived exactly as CI derives it; `X-Robots-Tag: noindex` on every response |
+| A failing rollout does not take the environment down | An image tag that cannot exist is rolled out and the environment keeps serving throughout |
+| Recovery is timed, not hoped for | Pod deleted, Deployment deleted, Service deleted — each restored, with the seconds recorded |
+| Production verifies itself | The release is confirmed by `/api/info` reporting the promoted SHA, and reverted automatically if it never does |
 
 Four bugs were found only by running this, and are fixed:
 
@@ -160,6 +225,8 @@ either `make dev-cluster` for a local one or `infra/azure` for a cloud VM.
 make            # every target, with what it does
 make validate   # everything checkable without a cluster
 make e2e        # a preview environment on a throwaway cluster
+make chaos      # break one on purpose, and time the recovery
+make slo        # provisioning latency against the objective
 ```
 
 When something breaks, **[docs/runbook.md](docs/runbook.md)** lists every

@@ -53,17 +53,36 @@ jobs:
       image-name: my-app
       context: .
       preview-base-host: 20-24-211-179.nip.io
+      # Optional. Runs against the live environment once it answers, and
+      # reports as a check on the pull request. $PREVIEW_URL, $PREVIEW_USER
+      # and $PREVIEW_PASSWORD are set for you.
+      preview-test: npm run smoke
+    secrets:
+      # Environments are password-protected. Ask whoever runs the cluster for
+      # this; without it your environment still deploys, but it is open to
+      # anyone with the link and the comment will say so.
+      preview-secret-salt: ${{ secrets.PREVIEW_SECRET_SALT }}
 ```
 
 That is the whole integration. It builds your image for both architectures,
 tags it the way the platform looks for, scans it, labels the pull request,
-waits for the environment to answer, and then records a deployment and comments
-the URL — checked, so the link works when a reviewer clicks it.
+waits for the environment to answer, runs your smoke tests against it, and then
+records a deployment and comments the URL and its password — checked, so the
+link works when a reviewer clicks it.
 
 Useful inputs: `dockerfile` if it is not `<context>/Dockerfile`, `slug` if your
-image name differs from the name you are onboarded under, and
-`fail-on-vulnerabilities: false` if a failing scan should warn rather than
-block.
+image name differs from the name you are onboarded under,
+`preview-test-directory` if your smoke command runs somewhere other than the
+repository root, and `fail-on-vulnerabilities: false` if a failing scan should
+warn rather than block.
+
+**On `preview-test`.** It is worth adding. Without it a reviewer gets a link and
+has to work out for themselves whether anything is broken; with it, the pull
+request carries a check that either passed against a real deployment of that
+commit or did not. `app/smoke-test.js` in the platform repository is a worked
+example — it asserts the environment reports the pull request it belongs to,
+that the health endpoint is up, and that the protections the platform promises
+are actually in front of it.
 
 ### 3. Opt in — nobody needs to approve you
 
@@ -73,7 +92,19 @@ Add `.github/preview.yml` to your repository:
 port: 8080              # what your application listens on
 healthPath: /healthz    # what the probes should ask for; defaults to /
 image: my-app           # optional; defaults to the repository name
+database: false         # optional; an ephemeral Postgres per pull request
 ```
+
+**On `database`.** Setting it true gives each of your pull requests its own
+Postgres, created and destroyed with the environment, reachable at
+`DATABASE_URL`. It is empty when it starts — running your migrations and seeding
+fixtures is your application's job on boot, because a fixture read out of the
+branch under review would be unreviewed content in the deploy path.
+
+Storage is ephemeral on purpose: the data resets if the pod restarts. A preview
+database is meant to be reconstructible from your migrations, not accumulated.
+Leave it off unless you need it; it is the most expensive thing the platform
+will schedule for you.
 
 Then add the topic **`pr-preview`** to the repository (Settings, or the gear
 beside About on the repository page).
@@ -170,7 +201,7 @@ produced, starting from what each one looks like from the outside.
 
 ## Limits, and what happens when you reach them
 
-**Your repository gets five environments at once** by default. Past that, a
+**Your repository gets three environments at once** by default. Past that, a
 pull request is told so and waits for one to free up. Raise it with
 `max-environments` if the operator has capacity, or add the label by hand to
 take a slot.
@@ -178,10 +209,12 @@ take a slot.
 **The cluster serves ten repositories** by default. An eleventh is skipped,
 with the reason in the discovery run's summary.
 
-Those two multiply, and the product is what the node has to hold. A shared
-2-vCPU node holds roughly 58 environments requesting what the sample
-applications request — or four requesting the per-namespace ceiling. If your
-application is heavy, expect to be the one that fills it.
+Those two multiply and the product exceeds the node, which is unavoidable —
+caps that multiplied safely would have to be uselessly small. They are
+preventive, stopping any one repository monopolising the cluster; the
+`TooManyPreviewEnvironments` alert is the backstop that watches the aggregate.
+[`docs/capacity.md`](capacity.md) has the measured numbers. If your application
+is heavy, expect to be the one that fills it.
 
 **When it is full, new pods stay Pending.** The scheduler refuses new work
 rather than evicting a running environment, so a full cluster denies new
@@ -191,6 +224,14 @@ environments instead of breaking existing ones.
 repository it does not own. Copy `preview-lifecycle.yml` into yours to get
 automatic expiry; without it, closing pull requests is what frees capacity.
 
-**Pull requests from forks get no environment.** A fork's token cannot publish
-images, and building fork code with a token that could would hand an unreviewed
-branch the ability to push to the registry.
+**Pull requests from forks need a maintainer's label.** A fork's token cannot
+publish images, and building fork code with a token that could would hand an
+unreviewed branch the ability to push to the registry — so the work is split.
+The fork's code is built with no secrets and no registry access at all, and a
+second workflow, which runs from the default branch and which a pull request
+cannot modify, publishes the result once somebody with write access applies
+`safe-to-preview`.
+
+That label is the decision to run unreviewed code on a shared cluster, and it
+is deliberately a person's to make. [ADR 0010](decisions/0010-fork-previews.md)
+covers why this shape and not `pull_request_target`.
