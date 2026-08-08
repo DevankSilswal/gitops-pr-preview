@@ -65,6 +65,7 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx --create-namespace \
   "${INGRESS_ARGS[@]}" \
   --set controller.ingressClassResource.default=true \
+  --set controller.config.global-allowed-response-headers=X-Robots-Tag \
   --wait --timeout 10m
 
 if [[ -n "${ACME_EMAIL:-}" || -n "${WITH_TLS:-}" ]]; then
@@ -155,6 +156,42 @@ else
   echo "==> No WEBHOOK_SECRET set — GitHub pushes will be rejected, polling still works"
 fi
 
+# The ApplicationSet controller builds its webhook handler at startup, and
+# needs server.secretkey to do it — which argocd-server generates on first run.
+# On a fresh cluster the controller loses that race, logs
+# "server.secretkey is missing", and then runs indefinitely with nothing bound
+# to the port its own Service advertises. Restarting it once the key exists is
+# the whole fix, and finding that out took an hour of 502s.
+if [[ -n "${WEBHOOK_SECRET:-}" ]]; then
+  echo "==> Restarting the ApplicationSet controller so it binds its webhook"
+  kubectl -n argocd rollout restart deploy/argocd-applicationset-controller >/dev/null
+  kubectl -n argocd rollout status deploy/argocd-applicationset-controller --timeout=5m >/dev/null
+fi
+
+# Cluster-wide secret material, from which every per-environment secret — the
+# preview password, the ephemeral database password — is derived.
+#
+# Read back if it already exists rather than regenerated, because rotating it
+# would silently invalidate every preview password already posted on an open
+# pull request. Re-running this script has to stay safe, which is a property
+# that has been verified four times over and is easy to break here.
+echo "==> Ensuring the per-environment secret salt exists"
+PREVIEW_SECRET_SALT="$(kubectl -n argocd get secret preview-secret-salt \
+  -o jsonpath='{.data.salt}' 2>/dev/null | base64 -d 2>/dev/null || true)"
+
+if [[ -z "$PREVIEW_SECRET_SALT" ]]; then
+  # openssl is present on any machine that got this far; head -c on
+  # /dev/urandom would do as well.
+  PREVIEW_SECRET_SALT="$(openssl rand -hex 32)"
+  kubectl create secret generic preview-secret-salt \
+    --namespace argocd \
+    --from-literal=salt="$PREVIEW_SECRET_SALT" >/dev/null
+  echo "    generated a new salt"
+else
+  echo "    reusing the existing salt, so passwords already posted stay valid"
+fi
+export PREVIEW_SECRET_SALT
+
 echo "==> Storing the GitHub token for the pull request generator"
 kubectl create secret generic github-token \
   --namespace argocd \
@@ -197,6 +234,8 @@ fi
 # never appears.
 export PREVIEW_BASE_HOST TLS_ENABLED TLS_ISSUER
 export PROD_IMAGE_TAG=latest
+# PREVIEW_SECRET_SALT is already exported above, where it is generated or read
+# back; render-argocd.rb substitutes it into the ApplicationSet.
 
 # Applied in a stated order rather than whatever the glob happens to produce.
 # The project has to exist before anything references it — and alphabetically
@@ -237,6 +276,11 @@ Done.
 Set PREVIEW_BASE_HOST to '$PREVIEW_BASE_HOST' in the repository variables so CI
 can post preview links on pull requests:
   gh variable set PREVIEW_BASE_HOST --body '$PREVIEW_BASE_HOST'
+
+Preview environments are password-protected. CI derives each password from the
+cluster salt, so it needs the same value to post it on the pull request:
+  gh secret set PREVIEW_SECRET_SALT --body "\$(kubectl -n argocd get secret \\
+    preview-secret-salt -o jsonpath='{.data.salt}' | base64 -d)"
 
 Label a pull request 'preview' to create your first environment.
 EOF
