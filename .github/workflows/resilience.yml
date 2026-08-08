@@ -1,0 +1,73 @@
+name: resilience
+
+# Breaks a preview environment on purpose, weekly, and records how long it took
+# to come back.
+#
+# The runbook documents every failure this platform has produced by accident.
+# This is the deliberate half. "Self-healing" is easy to write in a README and
+# hard to keep true — a syncPolicy edit, a missing finalizer or a rollout
+# strategy change can quietly remove the property months after it was verified.
+#
+# Weekly rather than per-pull-request. Nothing here is affected by an ordinary
+# code change, it needs a cluster boot per run, and a slow job on every pull
+# request is a job people learn to skip.
+
+on:
+  schedule:
+    # Sunday, early. Nothing else is running.
+    - cron: '15 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to test with. Defaults to what production runs.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Whatever production is pinned to is a tag that certainly exists and
+      # certainly works, which is what this needs — the point is to break the
+      # environment deliberately, not to discover a broken image by accident.
+      - name: Choose an image tag
+        id: tag
+        env:
+          OVERRIDE: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OVERRIDE:-}" ]; then
+            TAG="$OVERRIDE"
+          else
+            TAG=$(grep -E '^  tag: ' charts/preview-app/values-production.yaml | awk '{print $2}')
+          fi
+          test -n "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "testing with $TAG"
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: chaos
+          config: scripts/kind-cluster.yaml
+
+      - name: Induce failures and measure recovery
+        run: |
+          set -o pipefail
+          ./scripts/chaos-test.sh \
+            ghcr.io/${{ github.repository_owner }}/preview-app \
+            "${{ steps.tag.outputs.tag }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Show what the cluster was doing if it failed
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl describe pods -n chaos-pr-1 || true
+          kubectl logs -n chaos-pr-1 -l app.kubernetes.io/name=preview-app --tail=50 || true
