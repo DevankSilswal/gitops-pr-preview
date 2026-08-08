@@ -71,3 +71,36 @@ jobs:
           kubectl get pods -A
           kubectl describe pods -n chaos-pr-1 || true
           kubectl logs -n chaos-pr-1 -l app.kubernetes.io/name=preview-app --tail=50 || true
+
+  # The recovery story for this platform is "destroy the VM and run the
+  # bootstrap script". That was demonstrated once, by hand, by the person who
+  # wrote it — which makes the recovery path exactly as reliable as one
+  # person's memory of a 250-line script.
+  #
+  # This runs it against a fresh cluster and then runs it again, because the
+  # honest response to "did that work?" during an incident is to run it again,
+  # and a script that is only correct the first time punishes that instinct.
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: bootstrap
+          config: scripts/kind-cluster.yaml
+
+      - name: Bootstrap twice, and check the second run changed nothing
+        run: |
+          set -o pipefail
+          ./scripts/bootstrap-test.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Show what the cluster was doing if it failed
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n argocd get applicationset,appproject,application 2>&1 | head -30 || true
+          kubectl -n argocd describe pods 2>&1 | tail -60 || true

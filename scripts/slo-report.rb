@@ -28,6 +28,21 @@ METRICS = File.join(ROOT, 'metrics/provisioning.jsonl')
 SLO_SECONDS = Float(ENV.fetch('SLO_SECONDS', '120'))
 SLO_TARGET = Float(ENV.fetch('SLO_TARGET', '0.95'))
 
+# How many samples before an attainment figure means anything.
+#
+# A 95% objective cannot be evaluated against fewer than 20 samples without the
+# arithmetic being theatre: at n=1 the answer is always 0% or 100%, and at n=5
+# a single slow run drops attainment to 80% — which reads as a breached
+# objective and is actually one sample of noise.
+#
+# Reporting "100% attainment (1/1)" is worse than reporting nothing. It looks
+# like evidence, invites exactly the question "over how many?", and the honest
+# answer undoes the claim and some of the credibility of every number beside
+# it. So below this, percentiles are still printed — they are descriptive and
+# make no claim — and the attainment line is replaced by how many more samples
+# are needed.
+MIN_SAMPLES = Integer(ENV.fetch('SLO_MIN_SAMPLES', '20'))
+
 window_days = nil
 if (i = ARGV.index('--window-days'))
   window_days = Integer(ARGV.fetch(i + 1))
@@ -106,6 +121,8 @@ judged = provisions.empty? ? overall : provisions
 met = judged.count { |s| s <= SLO_SECONDS }
 attainment = met.to_f / judged.length
 ok = attainment >= SLO_TARGET
+# Enough samples for the attainment figure to be worth stating at all.
+enough = judged.length >= MIN_SAMPLES
 
 # The error budget is what is left of the failures the objective permits. A
 # negative one is not a rounding detail: it means the platform is already
@@ -119,9 +136,17 @@ if markdown
   puts
   puts "**Objective:** #{SLO_TARGET * 100}% of preview environments serving within #{SLO_SECONDS.to_i}s of the pull request opening."
   puts
-  puts "**Attainment:** #{(attainment * 100).round(1)}% over #{judged.length} first provisions — #{ok ? 'meeting the objective' : 'below the objective'}."
-  puts
-  puts "Error budget: #{budget_left.round(1)} of #{budget_total.round(1)} remaining."
+  if enough
+    puts "**Attainment:** #{(attainment * 100).round(1)}% over #{judged.length} first provisions — #{ok ? 'meeting the objective' : 'below the objective'}."
+    puts
+    puts "Error budget: #{budget_left.round(1)} of #{budget_total.round(1)} remaining."
+  else
+    puts "**Attainment: not yet measurable.** #{judged.length} of #{MIN_SAMPLES} samples."
+    puts
+    puts "A #{(SLO_TARGET * 100).round}% objective cannot be evaluated against #{judged.length} " \
+         "sample#{judged.length == 1 ? '' : 's'} — the answer would be arithmetic rather than " \
+         "evidence. The distribution below is descriptive and makes no claim about attainment."
+  end
   puts
   puts '| Operation | Count | p50 | p95 | max |'
   puts '|---|---:|---:|---:|---:|'
@@ -138,13 +163,23 @@ else
                 kind, s[:count], "#{s[:p50]}s", "#{s[:p95]}s", "#{s[:max]}s")
   end
   puts
-  puts "  attainment   #{(attainment * 100).round(1)}% (#{met}/#{judged.length})"
-  puts "  error budget #{budget_left.round(1)} of #{budget_total.round(1)} remaining"
-  puts
-  puts(ok ? 'Meeting the objective.' : 'BELOW the objective.')
+  if enough
+    puts "  attainment   #{(attainment * 100).round(1)}% (#{met}/#{judged.length})"
+    puts "  error budget #{budget_left.round(1)} of #{budget_total.round(1)} remaining"
+    puts
+    puts(ok ? 'Meeting the objective.' : 'BELOW the objective.')
+  else
+    puts "  attainment   not yet measurable — #{judged.length} of #{MIN_SAMPLES} samples"
+    puts
+    puts 'The distribution above is descriptive. Attainment is not reported until'
+    puts "there are #{MIN_SAMPLES} samples, because below that it is arithmetic rather than evidence."
+  end
 end
 
 # Reporting a miss is not the same as failing the build: the number is
 # information for whoever is looking, and a scheduled report that goes red on
 # a bad week trains people to ignore it. --strict is there for when it should.
-exit(1) if ARGV.include?('--strict') && !ok
+#
+# Too few samples is never a failure. It is the normal state of a new platform
+# and there is nothing to fix about it except waiting.
+exit(1) if ARGV.include?('--strict') && enough && !ok

@@ -118,6 +118,42 @@ jobs:
           render --set secretSalt=ci --set database.enabled=true \
                  --set ingress.tls.enabled=true --set namespace.create=true
           render --set auth.enabled=false --set auth.noIndex=false
+          render --set secretSalt=ci --set worker.enabled=true --set worker.command='npm run worker'
+          render --set secretSalt=ci --set database.enabled=true \
+                 --set worker.enabled=true --set worker.command='npm run worker'
+          render --set ingress.tls.enabled=true --set ingress.tls.wildcard=true
+
+      # A worker with no command runs the image's own entrypoint, which is a
+      # second copy of the web process wearing a worker's name.
+      - name: Fail if a worker can be asked for without a command
+        run: |
+          if helm template t charts/preview-app \
+               --set ingress.host=x-pr-1.127-0-0-1.nip.io \
+               --set worker.enabled=true >/dev/null 2>&1; then
+            echo "a worker rendered with no command" >&2
+            exit 1
+          fi
+          echo "refused, as it should"
+
+      # A wildcard covers every preview hostname, so an environment that also
+      # requests its own certificate puts back the per-pull-request issuance
+      # the wildcard exists to remove — silently, and against a rate limit
+      # shared with everyone else using the same registered domain.
+      - name: Fail if a wildcard cluster still issues per-host certificates
+        run: |
+          set -euo pipefail
+          OUT=$(helm template t charts/preview-app \
+            --set ingress.host=x-pr-1.127-0-0-1.nip.io \
+            --set ingress.tls.enabled=true --set ingress.tls.wildcard=true)
+          if grep -q 'cert-manager.io/cluster-issuer' <<<"$OUT"; then
+            echo "the ingress still asks cert-manager for a certificate" >&2
+            exit 1
+          fi
+          if grep -qE '^\s+secretName: .*-tls$' <<<"$OUT"; then
+            echo "the ingress still names its own TLS secret" >&2
+            exit 1
+          fi
+          echo "requests nothing, as it should"
 
       # A database whose password came from an empty salt would have the same
       # password on every cluster in the world. The chart has to refuse, not

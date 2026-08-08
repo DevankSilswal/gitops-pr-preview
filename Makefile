@@ -8,7 +8,7 @@ DEMO_HOST ?= pr-1.127-0-0-1.nip.io
 KIND_CLUSTER := gitops-preview
 
 .DEFAULT_GOAL := help
-.PHONY: help init test lint render validate tf-validate workflow-scripts slugs alerts shellcheck slo e2e chaos bootstrap dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
+.PHONY: help init test lint render validate tf-validate workflow-scripts slugs alerts shellcheck slo e2e chaos bootstrap bootstrap-test dev-cluster dev-bootstrap dev-down azure-up azure-stop azure-start azure-down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -69,6 +69,13 @@ e2e: ## Run the end-to-end test against a throwaway kind cluster
 	@# regardless, which is the silent green this repository exists to avoid.
 	@status=0; ./scripts/e2e-test.sh ghcr.io/devanksilswal/preview-app $(IMAGE_TAG) || status=$$?; \
 		kind delete cluster --name e2e; \
+		exit $$status
+
+bootstrap-test: ## Run the bootstrap twice on a throwaway cluster and check it is idempotent
+	kind create cluster --name bootstrap-test --config scripts/kind-cluster.yaml
+	@kubectl config use-context kind-bootstrap-test >/dev/null
+	@status=0; ./scripts/bootstrap-test.sh || status=$$?; \
+		kind delete cluster --name bootstrap-test; \
 		exit $$status
 
 chaos: ## Break a preview environment on purpose and measure the recovery
