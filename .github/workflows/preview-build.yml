@@ -482,7 +482,7 @@ jobs:
             // Say which of the two it is. A link that has been checked and a
             // link that has not are different things, and a reviewer clicking
             // a dead one learns to distrust all of them.
-            const body = [
+            const lines = [
               marker,
               '### Preview environment',
               '',
@@ -500,7 +500,7 @@ jobs:
             // — so GitHub's existing permissions answer the access question and
             // the platform stores no user list of its own.
             if (authOn) {
-              body.push(
+              lines.push(
                 '',
                 '<details><summary>Credentials</summary>',
                 '',
@@ -515,26 +515,32 @@ jobs:
                 '</details>',
               );
             } else {
-              body.push(
+              lines.push(
                 '',
                 '> This environment is **open to anyone with the link** — the cluster has',
                 '> no secret salt configured, so no password could be derived.',
               );
             }
 
-            body.push(
+            lines.push(
               '',
               'Image `' + process.env.IMAGE + '`',
             );
 
             if (Number.isFinite(seconds) && seconds > 0) {
-              body.push(`Ready ${seconds}s after this pull request was opened.`);
+              lines.push(`Ready ${seconds}s after this pull request was opened.`);
             }
 
-            body.push(
+            lines.push(
               '',
               'Removed automatically when this pull request closes.',
             );
+
+            // The API wants a string. Handing it the array was a real failure
+            // here — "HttpError: Invalid request", after a successful build and
+            // a passing smoke test, with nothing in the message to say which
+            // field was wrong.
+            const body = lines.join('\n');
 
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
