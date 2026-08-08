@@ -92,6 +92,11 @@ helm template "$RELEASE" "$REPO_ROOT/charts/preview-app" \
   --show-only templates/namespace.yaml | kubectl apply -f - >/dev/null
 
 echo "==> Deploying a preview environment"
+# Deployed with every optional feature on, because the combination is what
+# actually reaches a cluster and rendering each one alone proves less than it
+# appears to. The worker command is a no-op loop: what is being tested is that
+# the platform schedules and isolates a second process correctly, not that any
+# particular workload runs.
 helm install "$RELEASE" "$REPO_ROOT/charts/preview-app" \
   --namespace "$NS" \
   --set image.repository="$IMAGE_REPO" \
@@ -100,6 +105,10 @@ helm install "$RELEASE" "$REPO_ROOT/charts/preview-app" \
   --set prNumber=1 \
   --set ingress.host="$HOST" \
   --set secretSalt="$SECRET_SALT" \
+  --set worker.enabled=true \
+  --set worker.command='while true; do sleep 30; done' \
+  --set ingress.tls.enabled=true \
+  --set ingress.tls.wildcard=true \
   --wait --timeout 5m >/dev/null
 
 # --- the pod actually runs -------------------------------------------------
@@ -213,6 +222,63 @@ if kubectl -n "$NS" run pss-probe --image=busybox:1.36 --restart=Never \
   fail "a privileged pod was admitted; restricted Pod Security Admission is not enforced"
 else
   pass "a privileged pod is rejected by Pod Security Admission"
+fi
+
+# --- the worker runs beside the web process, and is reachable by nobody ----
+if kubectl wait --for=condition=Available deploy/"$RELEASE"-preview-app-worker \
+     -n "$NS" --timeout=120s >/dev/null 2>&1; then
+  pass "the worker deployment became available"
+else
+  fail "the worker never became available"
+fi
+
+WORKER_POD=$(kubectl get pod -n "$NS" -l app.kubernetes.io/component=worker -o name 2>/dev/null | head -1)
+if [[ -n "$WORKER_POD" ]]; then
+  ROLE=$(kubectl exec -n "$NS" "$WORKER_POD" -- printenv ROLE 2>/dev/null | tr -d '\r')
+  if [[ "$ROLE" == "worker" ]]; then
+    pass "the worker knows it is the worker (ROLE=worker)"
+  else
+    fail "expected ROLE=worker in the worker pod, got '${ROLE:-unset}'"
+  fi
+else
+  fail "no worker pod exists"
+fi
+
+# A queue consumer has no port and must have no way in.
+#
+# Checked by address rather than by label. Endpoint objects carry the *Service's*
+# labels and a list of pod IPs — they do not carry the pods' labels — so
+# grepping them for `component: worker` would never match whether or not a
+# Service routed here, which is a check that always passes. Asking whether the
+# worker's own IP appears in any endpoint in the namespace is the question that
+# was actually meant.
+WORKER_IP=$(kubectl get pod -n "$NS" -l app.kubernetes.io/component=worker \
+  -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+if [[ -z "$WORKER_IP" ]]; then
+  fail "could not read the worker pod's address, so routing could not be checked"
+elif kubectl get endpointslices -n "$NS" -o json 2>/dev/null | grep -q "\"$WORKER_IP\""; then
+  fail "a Service routes to the worker at $WORKER_IP"
+else
+  pass "no Service routes to the worker ($WORKER_IP is in no endpoint)"
+fi
+
+# --- a wildcard cluster issues no per-environment certificate -------------
+# The release above was installed with tls.enabled and tls.wildcard both on,
+# which is how a cluster with a wildcard deploys. Asking for a certificate here
+# as well would put back the per-pull-request issuance the wildcard exists to
+# remove — against a Let's Encrypt budget shared with every other user of the
+# same registered domain.
+INGRESS_JSON=$(kubectl get ingress -n "$NS" -o json 2>/dev/null)
+if grep -q 'cert-manager.io/cluster-issuer' <<<"$INGRESS_JSON"; then
+  fail "the Ingress asks cert-manager for its own certificate despite the wildcard"
+else
+  pass "no per-environment certificate is requested when a wildcard covers the host"
+fi
+
+if grep -q '"tls"' <<<"$INGRESS_JSON"; then
+  fail "the Ingress names its own TLS secret despite the wildcard"
+else
+  pass "the Ingress names no TLS secret of its own"
 fi
 
 # --- traffic reaches it through the ingress, routed by Host ---------------
