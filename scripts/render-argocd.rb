@@ -26,7 +26,7 @@ platform = YAML.safe_load(File.read(PLATFORM))
   abort "#{PLATFORM}: #{key} is required" if platform[key].to_s.strip.empty?
 end
 
-REQUIRED = %w[slug owner repo image port healthPath].freeze
+REQUIRED = %w[slug owner repo image port healthPath database workerEnabled].freeze
 
 files = Dir[File.join(ONBOARDED, '*.yaml')].sort
 abort "no repositories onboarded in #{ONBOARDED}" if files.empty?
@@ -49,6 +49,33 @@ slugs = files.map do |file|
   # the file that caused it.
   unless entry['port'].is_a?(String)
     abort "#{file}: port must be quoted, so it reaches ArgoCD as a string"
+  end
+
+  # Same reason, and the same failure mode: the ApplicationSet substitutes
+  # {{database}} straight into a Helm parameter, so it has to arrive as the
+  # string "true" or "false". A YAML boolean becomes `true` unquoted and a
+  # missing key leaves the placeholder in the manifest, both of which surface
+  # as an environment that never appears rather than as an error here.
+  unless %w[true false].include?(entry['database'])
+    abort "#{file}: database must be the quoted string \"true\" or \"false\", got #{entry['database'].inspect}"
+  end
+
+  unless %w[true false].include?(entry['workerEnabled'])
+    abort "#{file}: workerEnabled must be the quoted string \"true\" or \"false\", got #{entry['workerEnabled'].inspect}"
+  end
+
+  # A worker with no command runs the image's own entrypoint, which is a second
+  # copy of the web process rather than a worker. The chart refuses this too;
+  # catching it here names the file that caused it.
+  if entry['workerEnabled'] == 'true' && entry.fetch('workerCommand', '').to_s.strip.empty?
+    abort "#{file}: workerEnabled is true but workerCommand is empty"
+  end
+
+  # Substituted literally into a Helm parameter inside a YAML manifest, so a
+  # newline or a quote here does not fail — it produces a manifest that parses
+  # into something other than what was written.
+  if entry.fetch('workerCommand', '').to_s.match?(/["\n]/)
+    abort "#{file}: workerCommand may not contain newlines or double quotes"
   end
 
   # One file per slug keeps deletion obvious, and two files claiming the same
@@ -93,7 +120,18 @@ out = out.gsub(
 out = out.gsub('__PREVIEW_BASE_HOST__', base_host)
 out = out.gsub('__TLS_ENABLED__', ENV.fetch('TLS_ENABLED', 'false'))
 out = out.gsub('__TLS_ISSUER__', ENV.fetch('TLS_ISSUER', 'selfsigned'))
+# When the cluster serves a wildcard, previews must request no certificate of
+# their own — see deploy/platform/wildcard-tls.yaml. Defaults false so a
+# cluster without one keeps the per-host behaviour it has always had.
+out = out.gsub('__TLS_WILDCARD__', ENV.fetch('TLS_WILDCARD', 'false'))
 out = out.gsub('__PROD_IMAGE_TAG__', ENV.fetch('PROD_IMAGE_TAG', 'latest'))
+
+# Cluster-wide secret material. Empty is a supported state — it turns preview
+# passwords off rather than deriving one from a known salt — so this is not
+# validated as required. bootstrap-cluster.sh generates it once and keeps it in
+# argocd-secret, so re-running the bootstrap does not invalidate the passwords
+# already posted on open pull requests.
+out = out.gsub('__SECRET_SALT__', ENV.fetch('PREVIEW_SECRET_SALT', ''))
 
 # A placeholder that survives rendering would be applied literally and fail in
 # a way that points at the cluster rather than at this script.

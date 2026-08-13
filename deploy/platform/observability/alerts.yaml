@@ -93,8 +93,15 @@ spec:
 
         # The fleet as a whole, rather than any one environment. If this is
         # firing, the node is the constraint and old environments need expiring.
+        #
+        # 12 is an early warning, not the wall. The requests-based ceiling on
+        # this node is roughly 40 environments of the shape the sample
+        # applications have; firing at a third of that leaves time to expire
+        # something before pods start going Pending. The per-repository and
+        # per-cluster caps in docs/capacity.md are the preventive half — this
+        # is what notices when they add up faster than expected.
         - alert: TooManyPreviewEnvironments
-          expr: count(count by (namespace) (kube_pod_info{namespace=~".+-pr-[0-9]+"})) > 8
+          expr: count(count by (namespace) (kube_pod_info{namespace=~".+-pr-[0-9]+"})) > 12
           for: 15m
           labels:
             severity: warning

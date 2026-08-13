@@ -3,6 +3,30 @@
 # This file plus the `pr-preview` topic on the repository is the whole of
 # joining: a scheduled job on the platform finds it and onboards you. Remove
 # either and your environments go away.
+
+# Where your application listens, and what its probes should ask for.
 port: 3000
 healthPath: /api/health
+
+# Image name under ghcr.io/<your-owner>/. Your own namespace only — the owner
+# half is taken from the repository, never from this file.
 image: preview-app
+
+# An ephemeral Postgres alongside each environment, created and destroyed with
+# it. The connection string arrives as DATABASE_URL; migrating and seeding it
+# on startup is your application's job, because a fixture read out of the
+# branch under review would be pull-request-controlled content in the deploy
+# path.
+#
+# Off by default. It is the most expensive thing this platform will schedule
+# for you, and most applications do not need one.
+database: false
+
+# A background process beside the web one — a queue consumer, a scheduler.
+# Given as the command to run; the same image is used, with ROLE=worker set so
+# one image can branch on it. It gets no URL: nothing should reach it from
+# outside, and it is given no Service so that nothing can.
+#
+# Same image on purpose. A worker built from a different commit than the page a
+# reviewer is looking at would make the environment lie about what it runs.
+worker: false

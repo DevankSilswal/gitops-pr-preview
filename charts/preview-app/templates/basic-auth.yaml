@@ -1,0 +1,32 @@
+{{- if and .Values.auth.enabled .Values.secretSalt -}}
+# The credential ingress-nginx checks before letting anyone reach this
+# environment.
+#
+# Delivery is the interesting part. CI derives the same password from the same
+# salt and posts it in the pull request's own pinned comment, so whoever can
+# read the pull request can open the environment and nobody else can. GitHub's
+# permissions already answer "who is allowed to see this change", and reusing
+# that answer means the platform stores no user list, runs no identity
+# provider, and has nothing to revoke when somebody leaves a team.
+#
+# The obvious alternative — oauth2-proxy in front of every environment, with
+# real GitHub identity scoped to repository collaborators — is the better
+# product and does not fit. It is a second deployment plus a redis or a cookie
+# secret per environment on a two-vCPU node that has already been taken down
+# twice by adding components. See docs/decisions/0006-private-previews.md.
+#
+# bcrypt salts randomly, so this Secret re-renders differently every time even
+# though the password behind it never changes. The ApplicationSet therefore
+# tells ArgoCD to ignore differences in this object's data; without that,
+# selfHeal would rewrite it forever and every sync would report OutOfSync.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "preview-app.fullname" . }}-auth
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  # The key name is fixed by ingress-nginx.
+  auth: {{ htpasswd .Values.auth.username (include "preview-app.authPassword" .) | quote }}
+{{- end }}

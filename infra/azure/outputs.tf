@@ -16,12 +16,19 @@ output "fetch_kubeconfig" {
   EOT
 }
 
+# One argument, the node address. This printed an extra <github-owner> in front
+# of it for a while after the script's signature changed, so anyone who copied
+# it bootstrapped the cluster with NODE_IP set to the literal word.
 output "bootstrap_command" {
-  value = "GITHUB_TOKEN=$(gh auth token) ./scripts/bootstrap-cluster.sh <github-owner> ${azurerm_public_ip.main.ip_address}"
+  value = "GITHUB_TOKEN=$(gh auth token) ./scripts/bootstrap-cluster.sh ${azurerm_public_ip.main.ip_address}"
 }
 
 # nip.io reads dashes as address separators, so the dotted form would be
 # misparsed when it follows a label like pr-1.
+#
+# The slug prefix is not decoration: pull request #1 exists in every repository
+# ever created, so without it the second repository onboarded would take over
+# the first one's namespace.
 output "preview_url_pattern" {
-  value = "http://pr-<number>.${replace(azurerm_public_ip.main.ip_address, ".", "-")}.nip.io"
+  value = "https://<slug>-pr-<number>.${replace(azurerm_public_ip.main.ip_address, ".", "-")}.nip.io"
 }

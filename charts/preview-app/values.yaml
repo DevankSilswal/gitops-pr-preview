@@ -35,22 +35,141 @@ ingress:
   # Set per environment, e.g. pr-42.<node-ip>.nip.io
   host: ""
   tls:
-    # Off by default so a cluster without cert-manager still works. Let's
-    # Encrypt also rate-limits heavily, and preview environments churn through
-    # hostnames faster than almost any other workload.
+    # Off by default so a cluster without cert-manager still works.
     enabled: false
     clusterIssuer: letsencrypt-staging
+    # The cluster already serves a wildcard certificate covering every preview
+    # hostname, so this environment must request nothing of its own.
+    #
+    # Not an optimisation. Per-host issuance means one certificate per pull
+    # request forever, against Let's Encrypt's limit of 50 per registered
+    # domain per week — and on a shared domain like nip.io that budget is spent
+    # by strangers as well. A wildcard is issued once and renewed six times a
+    # year, so the limit stops being reachable at all.
+    #
+    # When this is on, the Ingress carries no cert-manager annotation and no
+    # tls block; ingress-nginx serves the shared certificate through its
+    # default-ssl-certificate setting. See deploy/platform/wildcard-tls.yaml.
+    wildcard: false
 
 networkPolicy:
   enabled: true
   # Namespace the ingress controller runs in; the only source allowed to reach
   # a preview environment.
   ingressNamespace: ingress-nginx
+  # Egress is restricted to these ports rather than every port on the public
+  # internet. A preview runs unreviewed code from a repository this operator
+  # may not control, and the node's address is the source anyone abused by it
+  # would see. DNS, HTTP and HTTPS cover fetching dependencies and calling APIs;
+  # they do not cover sending mail, scanning SSH, or holding a command-and-
+  # control channel on an arbitrary port.
+  egressPorts:
+    - port: 80
+      protocol: TCP
+    - port: 443
+      protocol: TCP
+
+# Preview environments are private by default.
+#
+# Without this, every environment is a public URL that anyone can reach and
+# that search engines will index — unreleased work, on a guessable hostname
+# (<slug>-pr-<number>), served to the open internet. That is a dealbreaker for
+# any team with something not yet announced, and it is the largest single gap
+# against the commercial platforms this project is measured against.
+#
+# The password is derived, not stored, and CI posts it in the pull request's
+# own pinned comment. Anyone who can read the pull request gets in; anyone who
+# cannot, does not. The authorisation question is answered by GitHub's existing
+# permissions, and the platform keeps no user list of its own.
+auth:
+  enabled: true
+  username: preview
+  # Search engines index anything they can reach. Independent of the password,
+  # because a misconfigured auth annotation should not also mean the
+  # environment gets crawled — and a crawler already let in cannot be un-told.
+  noIndex: true
+
+# Cluster-wide secret material, generated once by bootstrap-cluster.sh and
+# passed in by the ApplicationSet. Never committed.
+#
+# Every per-environment secret is derived from this plus the environment's own
+# identity, so nothing has to be generated at render time — see the note on
+# preview-app.derivedSecret for why that matters to ArgoCD. Empty means the
+# preview password cannot be derived, so auth turns itself off rather than
+# falling back to something predictable; a database asked for without it fails
+# the render outright, because a database with a guessable password is worse
+# than no database.
+secretSalt: ""
+
+# A background worker alongside the web process.
+#
+# Real applications are not one process. A queue consumer, a scheduler, a
+# migration runner — an environment that can only hold the web tier is a
+# preview of half the change, and reviewing the half that is not there is
+# exactly the guesswork previews exist to remove.
+#
+# Same image as the application, different command, because that is how the
+# shape almost always arrives: one repository, one Dockerfile, several entry
+# points. It gets no Service and no Ingress — nothing is supposed to reach it
+# from outside — and it shares the namespace, so the quota, the NetworkPolicy
+# and Pod Security Admission all already cover it.
+worker:
+  enabled: false
+  # Passed to the container as its command. Empty with worker.enabled means the
+  # image's own entrypoint, which is rarely what anyone wants here.
+  command: ""
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 48Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# An ephemeral database, one per pull request.
+#
+# A preview environment that cannot hold data is a demo of a preview
+# environment. This is also the place the commercial platforms are weakest:
+# they point every preview at one shared branch database, so two pull requests
+# running conflicting migrations corrupt each other's review. A database that
+# is created and destroyed with the environment does not have that problem.
+#
+# Deliberately not a StatefulSet and deliberately not a PersistentVolumeClaim.
+# Data resetting when the pod restarts is correct for a preview — it is
+# supposed to be reproducible from migrations and fixtures, not accumulated —
+# and a single node has no spare volumes to hand out per pull request.
+#
+# The platform supplies an empty database and the connection string. Migrating
+# and seeding it is the application's job on startup, which is what real
+# applications already do. Reading a fixture out of the branch under review
+# would put pull-request-controlled content back into the deploy path, which is
+# exactly what deploy/argocd/appproject-previews.yaml exists to prevent.
+database:
+  enabled: false
+  # Alpine, because the image is pulled onto a single small node once per
+  # environment and the difference is around 250 MB each time.
+  image: postgres:17-alpine
+  name: app
+  user: app
+  port: 5432
+  # Small enough that the per-namespace ResourceQuota still admits the
+  # application alongside it.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
 
 quota:
   enabled: true
   hard:
-    pods: "4"
+    # Room for the web process, a worker, a database and one surge pod during a
+    # rollout. Raising this is how an environment starts being able to crowd
+    # the node, so it moves only with docs/capacity.md.
+    pods: "6"
     requests.cpu: "500m"
     requests.memory: 512Mi
     limits.cpu: "2"

@@ -10,6 +10,9 @@ on:
       # the exclusion that commit would trigger another build, which would
       # commit again, forever.
       - charts/preview-app/values-production.yaml
+      # Same reason: the record-sli job appends a measurement here on every
+      # preview that comes up.
+      - metrics/provisioning.jsonl
 
 # One build per pull request. Five pushes used to mean five builds racing each
 # other for the same tag, and the one that finished last won regardless of
@@ -32,9 +35,23 @@ jobs:
           # nothing else knows about. ArgoCD deploys the PR *head*, so build and
           # test that same commit or the image tag will never be found.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Read from the Dockerfile rather than pinned here. Pinning meant
+      # Dependabot could move the runtime image to Node 25 while the suite went
+      # on validating Node 20 — tests passing on a runtime that never ships.
+      # Derived, so the two cannot drift again.
+      - name: Read the Node version from the image the app actually ships
+        id: node
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -nE 's#^FROM node:([0-9]+)-alpine.*#\1#p' app/Dockerfile | head -1)
+          test -n "$VERSION" || { echo "no 'FROM node:<major>-alpine' in app/Dockerfile" >&2; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "testing against Node $VERSION"
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: ${{ steps.node.outputs.version }}
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci
@@ -84,6 +101,98 @@ jobs:
           grep -q 'containerPort: 8080' /tmp/other.yaml
           grep -q 'path: /healthz' /tmp/other.yaml
 
+      # Every optional feature, in every combination that can reach a cluster.
+      # Each is a switch the ApplicationSet flips per repository, so "it renders
+      # with the defaults" proves very little about what actually gets deployed.
+      - name: Render every feature combination
+        run: |
+          set -euo pipefail
+          H=x-pr-1.127-0-0-1.nip.io
+          render() {
+            echo "== helm template ${*:-<defaults>}"
+            helm template t charts/preview-app --set ingress.host="$H" "$@" > /dev/null
+          }
+          render
+          render --set secretSalt=ci
+          render --set secretSalt=ci --set database.enabled=true
+          render --set secretSalt=ci --set database.enabled=true \
+                 --set ingress.tls.enabled=true --set namespace.create=true
+          render --set auth.enabled=false --set auth.noIndex=false
+          render --set secretSalt=ci --set worker.enabled=true --set worker.command='npm run worker'
+          render --set secretSalt=ci --set database.enabled=true \
+                 --set worker.enabled=true --set worker.command='npm run worker'
+          render --set ingress.tls.enabled=true --set ingress.tls.wildcard=true
+
+      # A worker with no command runs the image's own entrypoint, which is a
+      # second copy of the web process wearing a worker's name.
+      - name: Fail if a worker can be asked for without a command
+        run: |
+          if helm template t charts/preview-app \
+               --set ingress.host=x-pr-1.127-0-0-1.nip.io \
+               --set worker.enabled=true >/dev/null 2>&1; then
+            echo "a worker rendered with no command" >&2
+            exit 1
+          fi
+          echo "refused, as it should"
+
+      # A wildcard covers every preview hostname, so an environment that also
+      # requests its own certificate puts back the per-pull-request issuance
+      # the wildcard exists to remove — silently, and against a rate limit
+      # shared with everyone else using the same registered domain.
+      - name: Fail if a wildcard cluster still issues per-host certificates
+        run: |
+          set -euo pipefail
+          OUT=$(helm template t charts/preview-app \
+            --set ingress.host=x-pr-1.127-0-0-1.nip.io \
+            --set ingress.tls.enabled=true --set ingress.tls.wildcard=true)
+          if grep -q 'cert-manager.io/cluster-issuer' <<<"$OUT"; then
+            echo "the ingress still asks cert-manager for a certificate" >&2
+            exit 1
+          fi
+          if grep -qE '^\s+secretName: .*-tls$' <<<"$OUT"; then
+            echo "the ingress still names its own TLS secret" >&2
+            exit 1
+          fi
+          echo "requests nothing, as it should"
+
+      # A database whose password came from an empty salt would have the same
+      # password on every cluster in the world. The chart has to refuse, not
+      # quietly fall back.
+      - name: Fail if a database can be asked for without a salt
+        run: |
+          if helm template t charts/preview-app \
+               --set ingress.host=x-pr-1.127-0-0-1.nip.io \
+               --set database.enabled=true >/dev/null 2>&1; then
+            echo "a database rendered with no secret salt; the password would be predictable" >&2
+            exit 1
+          fi
+          echo "refused, as it should"
+
+      # The password CI posts on the pull request and the password the chart
+      # writes into the htpasswd file are computed independently, in two
+      # languages. If they drift, every reviewer is handed a password that does
+      # not work — the same class of bug as the slug mismatch, somewhere nobody
+      # would think to look.
+      - name: Check the two password derivations agree
+        run: |
+          set -euo pipefail
+          SALT=ci-fixed-salt
+          derive() { printf '%s|%s|%s|%s' "$SALT" "arcade-pr-1" "1" "$1" | sha256sum | cut -c1-20; }
+
+          FROM_CHART=$(helm template t charts/preview-app \
+            --set ingress.host=arcade-pr-1.127-0-0-1.nip.io \
+            --set environment=arcade-pr-1 --set prNumber=1 \
+            --set database.enabled=true --set secretSalt="$SALT" \
+            | sed -nE 's#.*postgres://app:([a-f0-9]{20})@.*#\1#p' | head -1)
+
+          test -n "$FROM_CHART" || { echo "could not read the derived password out of the render" >&2; exit 1; }
+
+          if [ "$FROM_CHART" != "$(derive database)" ]; then
+            echo "chart derived $FROM_CHART, this workflow derived $(derive database)" >&2
+            exit 1
+          fi
+          echo "derivations agree; basic-auth would be $(derive basic-auth)"
+
       # ArgoCD reads deploy/platform/onboarded/ directly, so a malformed file
       # would reach the cluster and show up as an environment that never
       # appears. Onboarding is a pull request; this is what reviews it.
@@ -107,6 +216,15 @@ jobs:
       # else checks it; a syntax error would surface minutes into a live run.
       - name: Syntax-check the scripts embedded in workflows
         run: ./scripts/check-workflow-scripts.sh
+
+      # Every script here either builds the cluster or decides what to delete
+      # from it, and bootstrap-cluster.sh already carried a `shellcheck
+      # disable` directive — so it had been run by hand once and never wired
+      # in. Quoting mistakes in this repository destroy things.
+      - name: Lint the shell scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh
 
       # The slug is derived in Ruby by discovery, which decides the hostname
       # that exists, and in shell by the build workflow, which decides the one
@@ -155,6 +273,111 @@ jobs:
       # preview-lifecycle.yml grants the label here, with a cap and a bot
       # check the reusable workflow cannot enforce from inside one repository.
       manage-label: false
+      # Runs against the environment that is actually serving. This is what
+      # makes the preview a gate: the check either passed against a real
+      # deployment of this commit or it did not.
+      preview-test: npm run smoke
+      preview-test-directory: app
+    secrets:
+      # Preview environments are private; the chart derives each password from
+      # this salt and CI derives the same one to post it on the pull request.
+      # Neither ever reads it off the cluster.
+      preview-secret-salt: ${{ secrets.PREVIEW_SECRET_SALT }}
+
+  # The platform's own service level indicator: how long a reviewer waits
+  # between opening a pull request and having a URL that works.
+  #
+  # That is the promise this project makes, and until this job existed nothing
+  # measured it — the README said "about a minute" and nobody could say whether
+  # that was true, or what the webhook was worth against polling. A measurement
+  # per environment, appended to a file in git.
+  #
+  # Git as the datastore is not a shortcut. It needs no time-series database on
+  # a node that cannot afford one, the history is auditable, and for a project
+  # whose whole argument is that git holds the state, keeping its own metrics
+  # anywhere else would be incoherent.
+  record-sli:
+    if: github.event_name == 'pull_request' && needs.build.outputs.ready == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SECONDS_TO_READY: ${{ needs.build.outputs.provisioning-seconds }}
+          IMAGE_TAG: ${{ needs.build.outputs.tag }}
+        with:
+          script: |
+            const seconds = Number(process.env.SECONDS_TO_READY);
+            if (!Number.isFinite(seconds) || seconds <= 0) {
+              core.info('no usable measurement; nothing to record');
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const path = 'metrics/provisioning.jsonl';
+            const pr = context.payload.pull_request;
+
+            // A pull request that was opened and immediately built is a first
+            // provision; a later push to the same pull request is a
+            // redeployment into an environment that already exists. They are
+            // different operations with different expected latencies, so the
+            // measurement records which it was rather than averaging them into
+            // a number that describes neither.
+            const kind = context.payload.action === 'opened' ? 'provision' : 'redeploy';
+
+            const line = JSON.stringify({
+              at: new Date().toISOString(),
+              pr: pr.number,
+              kind,
+              seconds,
+              tag: process.env.IMAGE_TAG,
+            });
+
+            // Appended straight to the default branch through the contents
+            // API. Checking out and pushing would race the promote job and
+            // every other pull request building at the same time; this retries
+            // on the conflict the API reports instead.
+            for (let attempt = 1; attempt <= 5; attempt++) {
+              let sha;
+              let existing = '';
+              try {
+                const current = await github.rest.repos.getContent({
+                  owner, repo, path, ref: context.payload.repository.default_branch,
+                });
+                sha = current.data.sha;
+                existing = Buffer.from(current.data.content, 'base64').toString('utf8');
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+
+              const updated = existing.endsWith('\n') || existing === ''
+                ? existing + line + '\n'
+                : existing + '\n' + line + '\n';
+
+              try {
+                await github.rest.repos.createOrUpdateFileContents({
+                  owner, repo, path, sha,
+                  branch: context.payload.repository.default_branch,
+                  message: `chore(sli): ${kind} of #${pr.number} ready in ${seconds}s`,
+                  content: Buffer.from(updated, 'utf8').toString('base64'),
+                });
+                core.info(`recorded ${kind} ${seconds}s for #${pr.number}`);
+                core.summary.addRaw(`Environment ready **${seconds}s** after the pull request was opened (${kind}).`);
+                await core.summary.write();
+                return;
+              } catch (e) {
+                // 409 is another run having written between the read and the
+                // write. Re-read and try again rather than losing the sample.
+                if (e.status !== 409 && e.status !== 422) throw e;
+                core.info(`conflict on attempt ${attempt}; retrying`);
+                await new Promise((r) => setTimeout(r, 2000 * attempt));
+              }
+            }
+
+            core.warning('could not record the measurement after 5 attempts');
 
   # Releasing to production is a commit, not a deploy command. CI writes the
   # tag it just published into the repository; ArgoCD sees the commit and rolls
@@ -193,6 +416,154 @@ jobs:
           git commit -m "chore(release): deploy ${TAG} to production"
           git push
           echo "promoted $current -> $TAG" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record what was promoted
+        id: promoted
+        run: |
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ needs.build.outputs.tag }}" >> "$GITHUB_OUTPUT"
+
+  # Watches production converge, and reverts the release if it does not.
+  #
+  # Until this existed, promote wrote a tag, pushed, and the workflow ended.
+  # Nothing confirmed ArgoCD had picked the commit up, nothing confirmed the
+  # live URL was serving it, and a bad merge reached production and stayed
+  # there until somebody happened to notice. values-production.yaml has always
+  # said that rolling back is a revert; this is the job that performs one.
+  #
+  # The check is deliberately stronger than "did something answer 200". It
+  # polls /api/info until the deployed build reports the commit that was just
+  # promoted, which is the whole reason that endpoint exists — an old pod
+  # answers a health check perfectly well.
+  verify-production:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PREVIEW_BASE_HOST != ''
+    needs: [build, promote]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The promote commit is on the branch now, and reverting needs it.
+          ref: main
+          fetch-depth: 0
+
+      - name: Wait for production to serve the promoted commit
+        id: converge
+        env:
+          URL: "https://app.${{ vars.PREVIEW_BASE_HOST }}"
+          EXPECT_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+          # ArgoCD polls, syncs, and then a rollout has to complete with
+          # maxUnavailable: 0. Ten minutes is comfortably past all three and
+          # well short of somebody noticing by hand.
+          deadline=$(( SECONDS + 600 ))
+          while [ $SECONDS -lt $deadline ]; do
+            body=$(curl -s --max-time 10 "$URL/api/info" || true)
+            reported=$(printf '%s' "$body" | sed -nE 's/.*"gitSha":"([^"]*)".*/\1/p')
+            if [ "$reported" = "$EXPECT_SHA" ]; then
+              echo "converged=true" >> "$GITHUB_OUTPUT"
+              echo "production is serving $EXPECT_SHA after ${SECONDS}s"
+              exit 0
+            fi
+            sleep 15
+          done
+
+          echo "converged=false" >> "$GITHUB_OUTPUT"
+          echo "production never reported $EXPECT_SHA (last saw: ${reported:-nothing})"
+
+      - name: Smoke-test production
+        id: smoke
+        if: steps.converge.outputs.converged == 'true'
+        working-directory: app
+        env:
+          PREVIEW_URL: ${{ steps.converge.outputs.url }}
+          EXPECT_SHA: ${{ github.sha }}
+        run: npm run smoke
+
+      # Rolling back is a revert, which is the same mechanism as rolling
+      # forward: a commit changes values-production.yaml, ArgoCD notices, and
+      # the cluster follows. Nothing here holds cluster credentials either.
+      - name: Revert the release if production did not come up
+        if: failure() || steps.converge.outputs.converged != 'true'
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main
+
+          RELEASE_COMMIT=$(git log --format='%H %s' -20 \
+            | grep -m1 "chore(release): deploy ${TAG} to production" \
+            | cut -d' ' -f1 || true)
+
+          if [ -z "$RELEASE_COMMIT" ]; then
+            echo "could not find the release commit for ${TAG}; not reverting blindly" >&2
+            exit 1
+          fi
+
+          git revert --no-edit "$RELEASE_COMMIT"
+          git push
+          {
+            echo "### Production rolled back"
+            echo
+            echo "\`${TAG}\` did not come up. Reverted \`${RELEASE_COMMIT}\`;"
+            echo "ArgoCD will restore the previous image."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Stage one of the fork preview path: build the fork's code with nothing
+  # worth stealing in the environment, and hand the result on as an artifact.
+  #
+  # This job has no secrets, no registry login and a read-only token. That is
+  # the point — it is the only place a fork's code executes, and there is
+  # nothing here for it to reach. fork-preview-publish.yml, which runs from the
+  # default branch on workflow_run and cannot be modified by a pull request,
+  # is what pushes the result.
+  #
+  # Same-repository pull requests skip this entirely; the build job above
+  # already published their image directly.
+  fork-image:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    needs: [test, manifests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # amd64 only. The fork path is already slower for having to round-trip
+      # through an artifact, and emulated arm64 on a runner doubles it again
+      # for a node that is x86.
+      - name: Build to a tarball, with nowhere to push it
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: app
+          file: app/Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: fork-preview:${{ github.event.pull_request.head.sha }}
+          outputs: type=docker,dest=image.tar
+          build-args: |
+            GIT_SHA=${{ github.event.pull_request.head.sha }}
+          cache-from: type=gha
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fork-preview-image
+          path: image.tar
+          retention-days: 1
 
   # Renders and lints prove the templates are well formed. This proves the
   # things only a cluster can: that probes pass, that ingress routes by Host,

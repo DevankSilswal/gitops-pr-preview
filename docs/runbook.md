@@ -287,3 +287,86 @@ kubectl -n broken-pr-1 create deployment broken --image=example.com/nope:nope
 # PreviewImagePullFailing goes pending, then firing after ten minutes
 kubectl delete ns broken-pr-1
 ```
+
+## Every URL is down and nothing was deployed
+
+The node runs on spot capacity, so Azure can reclaim it. That is the first
+thing to check, because it looks exactly like a cluster that has broken:
+
+```bash
+az vm get-instance-view -g gitops-k3s-rg -n gitops-k3s \
+  --query "instanceView.statuses[?starts_with(code,'PowerState/')].code" -o tsv
+```
+
+`PowerState/deallocated` means an eviction, or the nightly shutdown doing its
+job. `.github/workflows/spot-watchdog.yml` starts it again within ten minutes,
+outside the quiet window — check that workflow's recent runs before starting it
+by hand. If the watchdog is not running at all, `AZURE_CLIENT_ID` is probably
+unset, which disables it silently by design.
+
+Nothing needs redeploying afterwards. k3s comes back with its own state and
+ArgoCD reconciles the fleet from git; that is the property that makes spot
+affordable in the first place ([ADR 0008](decisions/0008-spot-capacity.md)).
+
+If it is running and still serving nothing, it is not the spot instance and the
+rest of this runbook applies.
+
+## The preview password does not work
+
+The password is derived on both sides rather than stored: the chart computes it
+from the cluster salt, and CI computes the same value to post it. If a reviewer
+is told a password that gets a 401, the two sides are using different salts.
+
+```bash
+# what the cluster has
+kubectl -n argocd get secret preview-secret-salt -o jsonpath='{.data.salt}' | base64 -d
+```
+
+Compare against the `PREVIEW_SECRET_SALT` repository secret. The usual cause is
+the cluster having been rebuilt with a new salt without the secret being
+updated — `bootstrap-cluster.sh` reads an existing salt back rather than
+regenerating it precisely so this does not happen, but a cluster rebuilt from
+nothing has nothing to read back.
+
+A comment saying the environment is **open to anyone with the link** means CI
+had no salt at all, so the chart turned auth off rather than deriving a
+password from an empty value.
+
+## The environment is up but the comment says it is not answering
+
+The health check runs with the preview credentials, so this can mean the
+environment is fine and the password is wrong — see above — rather than that
+the environment is down. Check by hand with the credentials from the comment:
+
+```bash
+curl -sSI --user preview:<password> https://<slug>-pr-<n>.<base>/ | head -1
+```
+
+A `401` confirms it is the salt. A `503` or a timeout is a real problem, and
+`kubectl -n <slug>-pr-<n> describe pod` is the next step.
+
+## Production rolled itself back
+
+`verify-production` polls `/api/info` until the live deployment reports the
+commit that was just promoted, and reverts the release commit if it never does.
+An automatic revert means one of three things:
+
+- ArgoCD never synced — check the Application's status
+- the rollout never completed — `kubectl -n production rollout status deploy/...`
+- it came up and the smoke tests failed against it, which is the interesting case
+
+The revert restores the previous image, so production is serving something that
+worked. `git log` on `charts/preview-app/values-production.yaml` shows both the
+release and the revert, and the workflow run summary says which check failed.
+
+## An `[alert]` issue appeared
+
+That is the alerting path working. Issues labelled `alert` are opened by
+`alerts-to-issues.yml` while a Prometheus alert is firing and closed
+automatically when it stops — the issue title carries the alert name and the
+namespace it fired for.
+
+An issue that will not close means the alert is still firing. An alert firing
+with nothing wrong usually means the expression matches namespaces it should
+not; see "the alerts are green and you do not believe them" above, which is the
+same problem in the other direction.

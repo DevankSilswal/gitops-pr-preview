@@ -1,0 +1,25 @@
+# Who may run code on this cluster.
+#
+# Discovery searches GitHub for the `pr-preview` topic, and anyone can add a
+# topic to their own repository. Without this file, that meant anyone on GitHub
+# could cause arbitrary containers to be scheduled on this operator's machine —
+# with the operator's cloud account paying for the CPU, and the operator's IP
+# address as the source of whatever those containers did.
+#
+# The NetworkPolicy, the quota and restricted Pod Security Admission all limit
+# what a preview environment can do once it is running. None of them answer the
+# question of who gets to start one, and that is the question that ends with a
+# suspended subscription.
+#
+# So: an owner has to be listed here. Adding yourself is a pull request against
+# this file — still self-service, still a commit and nothing else, and still no
+# ticket and no meeting. It is one review by somebody who is accountable for
+# the machine, which is the smallest possible amount of gatekeeping that makes
+# the difference between "open platform" and "open relay".
+#
+# Removing an owner offboards every repository they had on the next discovery
+# run, and with it every environment.
+
+owners:
+  # The platform's own repositories.
+  - DevankSilswal

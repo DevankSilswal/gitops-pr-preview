@@ -8,3 +8,6 @@ repo: notes-board
 image: ghcr.io/devanksilswal/notes-board
 port: '8080'
 healthPath: "/healthz"
+database: "false"
+workerEnabled: "false"
+workerCommand: ""
