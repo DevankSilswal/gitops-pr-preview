@@ -5,3 +5,4 @@
 {"at":"2026-08-08T12:24:20.422Z","pr":24,"kind":"redeploy","seconds":79,"tag":"pr-24-b94fd243c1a1c82a538bba6fe5ed8224e0206829"}
 {"at":"2026-08-13T07:50:49.357Z","pr":24,"kind":"redeploy","seconds":415673,"tag":"pr-24-b94fd243c1a1c82a538bba6fe5ed8224e0206829"}
 {"at":"2026-08-13T09:09:47.979Z","pr":27,"kind":"redeploy","seconds":110,"tag":"pr-27-3fcdbd2ec4f47718cfc8b231ffb46cf83faf86c2"}
+{"at":"2026-08-13T10:06:40.710Z","pr":28,"kind":"provision","seconds":121,"tag":"pr-28-796b8b9514157a514f1fb5a78d4a144efa1eba65"}
