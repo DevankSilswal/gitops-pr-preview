@@ -84,7 +84,7 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx --create-namespace \
   "${INGRESS_ARGS[@]}" \
   --set controller.ingressClassResource.default=true \
-  --set controller.config.global-allowed-response-headers=X-Robots-Tag \
+  -f "$REPO_ROOT/deploy/platform/ingress-nginx-values.yaml" \
   --wait --timeout 10m
 
 if [[ -n "${ACME_EMAIL:-}" || -n "${WITH_TLS:-}" ]]; then

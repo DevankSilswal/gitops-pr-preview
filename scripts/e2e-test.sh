@@ -68,7 +68,7 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --set-string controller.tolerations[0].operator=Exists \
   --set-string controller.tolerations[0].effect=NoSchedule \
   --set controller.ingressClassResource.default=true \
-  --set controller.config.global-allowed-response-headers=X-Robots-Tag \
+  -f "$REPO_ROOT/deploy/platform/ingress-nginx-values.yaml" \
   --wait --timeout 6m >/dev/null
 
 # The namespace comes from the chart, exactly as it does in production.
@@ -109,6 +109,10 @@ helm install "$RELEASE" "$REPO_ROOT/charts/preview-app" \
   --set worker.command='while true; do sleep 1; done' \
   --set ingress.tls.enabled=true \
   --set ingress.tls.wildcard=true \
+  `# Explicitly on. It defaults off since the outage of 2026-08-13, so leaving` \
+  `# it to the default would mean the annotation that took production down is` \
+  `# never exercised by any test at all.` \
+  --set auth.noIndex=true \
   --wait --timeout 5m >/dev/null
 
 # --- the pod actually runs -------------------------------------------------
@@ -299,6 +303,33 @@ if [[ "$BODY" == *'"environment":"pr-1"'* ]]; then
   pass "ingress routes by Host and the app reports its own identity"
 else
   fail "wrong environment name: $BODY"
+fi
+
+# --- the response-header annotation is accepted, not merely written --------
+# The regression test for 2026-08-13. The chart asked the controller to emit
+# X-Robots-Tag; the controller's allow-list did not contain it; ingress-nginx
+# denied the entire location and every request returned 503 with the pods
+# reporting healthy throughout.
+#
+# Asserting on the header rather than on the status code is what makes this
+# test honest in both directions. A 200 alone would pass on a cluster that
+# quietly dropped the header, which is the state this test exists to
+# distinguish from a working one.
+HEADERS=$(curl -s -D - -o /dev/null --max-time 5 --user "preview:$PREVIEW_PASSWORD" \
+  -H "Host: $HOST" http://127.0.0.1/api/info 2>/dev/null || true)
+HDR_CODE=$(printf '%s' "$HEADERS" | awk 'NR==1 { print $2 }')
+
+if [[ "$HDR_CODE" == "503" ]]; then
+  fail "the ingress returned 503 with a custom-headers annotation in place — the
+        controller is refusing the annotation, which is the failure that took
+        production down on 2026-08-13. Check global-allowed-response-headers in
+        deploy/platform/ingress-nginx-values.yaml against what the chart asks for."
+elif printf '%s' "$HEADERS" | grep -qi '^x-robots-tag:'; then
+  pass "the controller accepted the custom-headers annotation and emitted the header"
+else
+  fail "no X-Robots-Tag in the response (status $HDR_CODE). The annotation was
+        rendered but the controller is not emitting it, so the allow-list and the
+        chart have drifted apart without failing loudly."
 fi
 
 # An unknown host must not fall through to this environment.

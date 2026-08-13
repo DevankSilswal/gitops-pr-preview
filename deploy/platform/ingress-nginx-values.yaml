@@ -1,0 +1,31 @@
+# ingress-nginx controller configuration — the single source of truth.
+#
+# This file exists because the same setting used to be written as a literal in
+# two places: scripts/bootstrap-cluster.sh, which configures production, and
+# scripts/e2e-test.sh, which configures the kind cluster CI runs against. Two
+# literals cannot disagree loudly. They can only disagree silently, and on
+# 2026-08-13 they did: the live cluster had been bootstrapped before the setting
+# existed and carried neither copy, so a chart change that asked for a response
+# header took production down with 503s for the better part of an hour, while
+# the e2e suite passed on a kind cluster that allowed the header through its own
+# copy of the flag.
+#
+# Both installs now read this file with `helm -f`. scripts/check-ingress-headers.sh
+# asserts that neither has grown an inline --set for anything defined here, and
+# that every header the preview chart asks the controller to emit is listed
+# below. A header that is not listed is not ignored by ingress-nginx: it denies
+# the whole location, and every request to that host fails.
+controller:
+  config:
+    # Response headers the controller is permitted to emit on behalf of an
+    # Ingress, via the nginx.ingress.kubernetes.io/custom-headers annotation.
+    #
+    # The indirection is deliberate. The alternative is enabling
+    # configuration-snippet annotations, which lets any Ingress in the cluster
+    # inject arbitrary nginx configuration — on a cluster whose purpose is
+    # running other people's unreviewed code, that would be handing out the
+    # ingress controller.
+    #
+    # Comma-separated. Adding a header here without adding it to the chart is
+    # harmless; adding it to the chart without adding it here is an outage.
+    global-allowed-response-headers: X-Robots-Tag
