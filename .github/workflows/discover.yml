@@ -40,7 +40,12 @@ jobs:
           # Capacity is finite and the cluster is one node. Serving more
           # repositories than it can hold does not fail politely — it fills the
           # node and takes everyone's environments down together.
-          MAX_REPOS: ${{ inputs.max_repos != '' && inputs.max_repos || vars.MAX_REPOS || '20' }}
+          #
+          # 10, matching the default in discover-repos.rb and the arithmetic in
+          # docs/capacity.md. This shipped as 20 while the script's own
+          # capacity comment reasoned about 10, which doubled the worst case
+          # past what the node was ever sized for.
+          MAX_REPOS: ${{ inputs.max_repos != '' && inputs.max_repos || vars.MAX_REPOS || '10' }}
         run: ./scripts/discover-repos.rb | tee "$GITHUB_STEP_SUMMARY"
 
       - name: Commit any change

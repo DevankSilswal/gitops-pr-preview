@@ -1,0 +1,162 @@
+name: alerts-to-issues
+
+# Gives the alerts somewhere to go.
+#
+# The rules in deploy/platform/observability/alerts.yaml are unit-tested and
+# they fire correctly — into a Prometheus UI reachable only by port-forward.
+# Nobody was ever going to see them, which is the failure the alerts file
+# itself warns about: an alert nobody receives is worse than no alert, because
+# everyone assumes something is watching.
+#
+# Why this instead of Alertmanager:
+#
+# Alertmanager is the obvious answer and it costs CPU on a two-vCPU node that
+# has already been taken down twice by adding components — and it would still
+# need somewhere to send things, which for this project would be a webhook to
+# a service that does not exist. Polling from a GitHub runner moves the work
+# off the node entirely, onto minutes that are free, and lands the alerts in
+# the same place as everything else about this platform: the repository.
+#
+# An open issue is a firing alert. It is closed when the alert stops firing, so
+# the issue list is the current state of the cluster rather than a log of
+# things that once went wrong.
+#
+# Setup: PROMETHEUS_URL variable, plus PROMETHEUS_USER and PROMETHEUS_PASSWORD
+# secrets if the endpoint is behind basic auth (it should be).
+
+on:
+  schedule:
+    # Every 15 minutes. The alerts all carry `for:` clauses of ten minutes or
+    # more, so anything this catches has already been true for a while and
+    # polling faster would only spend minutes to learn the same thing.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  poll:
+    if: vars.PROMETHEUS_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read the firing alerts
+        id: alerts
+        env:
+          PROMETHEUS_URL: ${{ vars.PROMETHEUS_URL }}
+          PROM_USER: ${{ secrets.PROMETHEUS_USER }}
+          PROM_PASSWORD: ${{ secrets.PROMETHEUS_PASSWORD }}
+        run: |
+          set -uo pipefail
+          AUTH=()
+          if [ -n "${PROM_USER:-}" ]; then
+            AUTH=(--user "${PROM_USER}:${PROM_PASSWORD}")
+          fi
+
+          # A cluster that is deallocated overnight, or evicted from spot
+          # capacity, is unreachable rather than healthy. Those are different
+          # things and closing every issue because nothing answered would be
+          # the monitoring equivalent of looking away.
+          if ! BODY=$(curl -sS --max-time 20 "${AUTH[@]}" "${PROMETHEUS_URL%/}/api/v1/alerts"); then
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+            echo "Prometheus did not answer; leaving existing issues alone"
+            exit 0
+          fi
+
+          echo "reachable=true" >> "$GITHUB_OUTPUT"
+          {
+            echo 'payload<<PROM_EOF'
+            printf '%s' "$BODY"
+            echo
+            echo 'PROM_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open and close issues to match
+        if: steps.alerts.outputs.reachable == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PAYLOAD: ${{ steps.alerts.outputs.payload }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const LABEL = 'alert';
+
+            let firing = [];
+            try {
+              const parsed = JSON.parse(process.env.PAYLOAD);
+              firing = (parsed.data?.alerts || []).filter((a) => a.state === 'firing');
+            } catch (e) {
+              core.setFailed(`could not parse the Prometheus response: ${e.message}`);
+              return;
+            }
+
+            // One issue per alert *instance*, keyed on the alert name and the
+            // namespace it fired for. Keying on the alert name alone would
+            // collapse eight broken environments into one issue that says
+            // nothing useful about which.
+            const keyOf = (a) =>
+              `${a.labels.alertname}/${a.labels.namespace || 'cluster'}`;
+            const wanted = new Map(firing.map((a) => [keyOf(a), a]));
+
+            await github.rest.issues
+              .getLabel({ owner, repo, name: LABEL })
+              .catch(async (e) => {
+                if (e.status !== 404) throw e;
+                await github.rest.issues.createLabel({
+                  owner, repo, name: LABEL, color: 'd93f0b',
+                  description: 'Opened automatically while a Prometheus alert is firing',
+                });
+              });
+
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: LABEL, per_page: 100,
+            });
+
+            const markerOf = (key) => `<!-- alert:${key} -->`;
+            const existing = new Map();
+            for (const issue of open) {
+              const match = (issue.body || '').match(/<!-- alert:(.+?) -->/);
+              if (match) existing.set(match[1], issue);
+            }
+
+            for (const [key, alert] of wanted) {
+              if (existing.has(key)) continue;
+
+              const body = [
+                markerOf(key),
+                `**${alert.annotations?.summary || key}**`,
+                '',
+                alert.annotations?.description || '',
+                '',
+                `Firing since ${alert.activeAt || 'unknown'}.`,
+                '',
+                'Closed automatically when it stops firing. The runbook for this',
+                'is docs/runbook.md.',
+              ].join('\n');
+
+              const issue = await github.rest.issues.create({
+                owner, repo, labels: [LABEL],
+                title: `[alert] ${key}`,
+                body,
+              });
+              core.info(`opened #${issue.data.number} for ${key}`);
+            }
+
+            for (const [key, issue] of existing) {
+              if (wanted.has(key)) continue;
+
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issue.number,
+                body: 'No longer firing.',
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: issue.number, state: 'closed',
+              });
+              core.info(`closed #${issue.number}; ${key} recovered`);
+            }
+
+            core.summary.addRaw(
+              `${wanted.size} alert(s) firing, ${existing.size} issue(s) already open.`,
+            );
+            await core.summary.write();

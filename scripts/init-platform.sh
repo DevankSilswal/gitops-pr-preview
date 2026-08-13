@@ -18,6 +18,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=scripts/lib/slug.sh
+. "$REPO_ROOT/scripts/lib/slug.sh"
+
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
   # Works for both git@github.com:owner/repo.git and https://github.com/owner/repo.git
@@ -53,17 +56,30 @@ EOF
 
 # 2. The example onboardings belong to whoever you forked from. Replace them
 #    with one for this repository's own sample application.
+#
+#    The slug is derived, never chosen — by exactly the rule discover-repos.rb
+#    and the reusable build workflow both use. A hand-picked one here (it used
+#    to be the literal string "arcade") disagrees with the hostname the build
+#    workflow advertises on every pull request, which is how every preview link
+#    was wrong once before.
+SLUG="$(slug_for "$OWNER/$REPO")"
+
 rm -f deploy/platform/onboarded/*.yaml
-cat > deploy/platform/onboarded/arcade.yaml <<EOF
+# Named after the slug, which render-argocd.rb enforces so that two files
+# cannot silently claim the same namespace.
+cat > "deploy/platform/onboarded/$SLUG.yaml" <<EOF
 # One file per onboarded repository. ArgoCD reads this directory from git, so
 # adding a file here is the whole of onboarding — nothing is run against the
 # cluster. Deleting it removes every environment that repository had.
-slug: arcade
+slug: $SLUG
 owner: $OWNER
 repo: $REPO
 image: ghcr.io/$OWNER_LC/preview-app
 port: "3000"
 healthPath: /api/health
+# Quoted, because the ApplicationSet substitutes this straight into a Helm
+# parameter and a YAML boolean would arrive unquoted.
+database: "false"
 EOF
 
 # 3. The production Application deploys the sample app from the original

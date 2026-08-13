@@ -9,10 +9,21 @@
 # because a webhook that is missed leaves no trace and something has to
 # eventually notice.
 #
-# Only /api/webhook is routed here. The rest of the ArgoCD API — which can
-# deploy anything anywhere — stays unreachable from the internet, and the
-# endpoint itself verifies GitHub's HMAC signature against a shared secret, so
-# routing it publicly does not make it callable.
+# It goes to the ApplicationSet controller's own webhook port. argocd-server
+# also serves /api/webhook, but that one only parses push events — it answers
+# a pull_request with "event not defined to be parsed" and a 400.
+#
+# The controller only binds port 7000 if it could build a webhook handler at
+# startup, and building one needs server.secretkey in argocd-secret. On a fresh
+# cluster the controller starts before argocd-server has generated that key,
+# fails once with "server.secretkey is missing", and then runs perfectly
+# happily forever with nothing listening on the port its own Service points at.
+# bootstrap-cluster.sh restarts it after the key exists.
+#
+# Nothing else is routed in. The ArgoCD API — which can deploy anything
+# anywhere — stays unreachable from the internet, and the endpoint verifies
+# GitHub's HMAC signature against a shared secret, so exposing this one path
+# does not make it callable by anyone else.
 #
 # Placeholders are substituted at apply time by scripts/render-argocd.rb.
 apiVersion: networking.k8s.io/v1
@@ -21,9 +32,6 @@ metadata:
   name: argocd-webhook
   namespace: argocd
   annotations:
-    # argocd-server terminates TLS itself, so the ingress has to speak HTTPS to
-    # it rather than plain HTTP.
-    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
     # A webhook body is small; anything larger is not GitHub.
     nginx.ingress.kubernetes.io/proxy-body-size: 1m
     __TLS_ANNOTATION__
@@ -40,6 +48,7 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: argocd-server
+                name: argocd-applicationset-controller
                 port:
-                  number: 443
+                  # Plain HTTP, unlike argocd-server which terminates TLS.
+                  number: 7000

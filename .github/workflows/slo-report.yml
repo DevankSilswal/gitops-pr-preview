@@ -1,0 +1,51 @@
+name: slo-report
+
+# Publishes how the platform is doing against its own objective.
+#
+# The measurements are appended one at a time by the record-sli job in
+# build.yml, which is the right shape for recording and the wrong shape for
+# reading. This turns them into percentiles and an attainment figure on a
+# schedule, so the number is somewhere to be found rather than something
+# somebody has to go and compute.
+#
+# Deliberately does not fail on a miss. A scheduled report that goes red on a
+# bad week is a report people learn to ignore; the error budget going negative
+# is information about what to work on next, not a broken build.
+
+on:
+  schedule:
+    # Monday morning, so the week starts with the number.
+    - cron: '5 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Only consider measurements from the last N days'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Report against the objective
+        env:
+          # 95% of preview environments serving within two minutes of the pull
+          # request being opened. Two minutes because that is roughly the point
+          # at which a reviewer stops waiting and goes to do something else,
+          # which is the thing the objective is actually about.
+          SLO_SECONDS: ${{ vars.SLO_SECONDS || '120' }}
+          SLO_TARGET: ${{ vars.SLO_TARGET || '0.95' }}
+          WINDOW: ${{ inputs.window_days }}
+        run: |
+          set -euo pipefail
+          ARGS=(--markdown)
+          if [ -n "${WINDOW:-}" ]; then
+            ARGS+=(--window-days "$WINDOW")
+          fi
+          ./scripts/slo-report.rb "${ARGS[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

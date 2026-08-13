@@ -1,0 +1,162 @@
+name: fork-preview-publish
+
+# Publishes an image built from a fork, so external contributors get preview
+# environments too.
+#
+# The problem this solves, and why it is done this way:
+#
+# A fork's pull request runs with a read-only token, so it cannot push to the
+# registry — which is correct, and is why forks got no environment at all until
+# now. The tempting fix is to build under `pull_request_target`, which does
+# carry write permissions. That is the well-known supply-chain hole: the branch
+# under review would execute with a token that can push images and write to
+# this repository, and anyone able to open a pull request would own the
+# registry.
+#
+# So the work is split in two, and the split is the whole security argument:
+#
+#   1. build.yml, on `pull_request`, builds the fork's code with no secrets and
+#      no registry access at all, and uploads the result as an artifact. A
+#      malicious branch runs there and finds nothing worth stealing.
+#
+#   2. this workflow, on `workflow_run`, holds the write token, downloads that
+#      artifact, and pushes it. It never checks out or executes the fork's
+#      code — it only moves bytes that stage one produced.
+#
+# The property that makes it sound: `workflow_run` executes the workflow
+# definition from the *default branch*, not from the pull request. A fork can
+# change what stage one builds; it cannot change a single line of what happens
+# here. That is the difference between this and `pull_request_target`.
+#
+# A maintainer still has to apply `safe-to-preview` first. Running unreviewed
+# code on a shared cluster should be somebody's decision, not automatic.
+
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  publish:
+    # Only for pull requests from forks whose build succeeded. Same-repository
+    # pull requests already published their own image in build.yml and do not
+    # come through here.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Find the pull request and check it is cleared
+        id: pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+
+            // workflow_run does not carry the pull request, so it is looked up
+            // by head SHA rather than trusted from anything the fork controls.
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const pr = prs.find((p) => p.head.sha === run.head_sha);
+
+            if (!pr) {
+              core.info(`no open pull request at ${run.head_sha}; nothing to publish`);
+              return { proceed: false };
+            }
+
+            // A maintainer's explicit decision. Only somebody with write access
+            // can apply a label, so this is the authorisation step — and it is
+            // read here, on the default branch's workflow, where the fork
+            // cannot influence how it is interpreted.
+            const cleared = pr.labels.some((l) => l.name === 'safe-to-preview');
+            if (!cleared) {
+              core.info(`#${pr.number} is not labelled safe-to-preview; not publishing`);
+              return { proceed: false };
+            }
+
+            core.setOutput('number', String(pr.number));
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('proceed', 'true');
+            return { proceed: true };
+
+      - name: Download the image built without credentials
+        if: steps.pr.outputs.proceed == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: run.id, per_page: 100 },
+            );
+            const image = artifacts.find((a) => a.name === 'fork-preview-image');
+            if (!image) {
+              core.setFailed('the build produced no fork-preview-image artifact');
+              return;
+            }
+
+            const download = await github.rest.actions.downloadArtifact({
+              owner, repo, artifact_id: image.id, archive_format: 'zip',
+            });
+            require('fs').writeFileSync('image.zip', Buffer.from(download.data));
+
+      - name: Unpack
+        if: steps.pr.outputs.proceed == 'true'
+        run: unzip -o image.zip
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: steps.pr.outputs.proceed == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The tag is rebuilt here from the head SHA this workflow looked up, not
+      # from anything inside the artifact. A fork that tampered with the tarball
+      # cannot make it land on another pull request's tag.
+      - name: Push under the tag the ApplicationSet will ask for
+        if: steps.pr.outputs.proceed == 'true'
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER_LC}/preview-app"
+          TAG="pr-${PR_NUMBER}-${HEAD_SHA}"
+
+          docker load --input image.tar
+          LOADED=$(docker images --format '{{.Repository}}:{{.Tag}}' | head -1)
+          docker tag "$LOADED" "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:${TAG}"
+          echo "published ${IMAGE}:${TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Granted only now, after the image exists. Labelling first produces an
+      # environment that sits in ImagePullBackOff until the push catches up.
+      - name: Grant the preview label
+        if: steps.pr.outputs.proceed == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            await github.rest.issues.addLabels({
+              owner, repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              labels: ['preview'],
+            });
+            core.info(`granted preview to fork pull request #${process.env.PR_NUMBER}`);

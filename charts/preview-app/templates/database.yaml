@@ -1,0 +1,164 @@
+{{- if .Values.database.enabled -}}
+# An ephemeral database for one pull request.
+#
+# Lives in the environment's own namespace, so everything already written for
+# the application covers it too: the ResourceQuota counts it, the LimitRange
+# bounds it, restricted Pod Security Admission applies to it, and deleting the
+# Application deletes it along with the namespace. It needs no new permission
+# in deploy/argocd/appproject-previews.yaml either — a Deployment and a Service
+# are both already on the whitelist, which is a good sign the design fits
+# rather than fights the platform.
+#
+# Storage is an emptyDir. A preview database is meant to be reconstructible
+# from migrations, not preserved; making it durable would mean a
+# PersistentVolumeClaim per pull request on a node that has none to spare, and
+# would turn a disposable environment into something with state worth keeping.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "preview-app.databaseFullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate. Two Postgres pods briefly sharing one
+    # emptyDir would not share it at all — each gets its own — so a rolling
+    # update would hand connections to an empty database mid-rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "preview-app.databaseSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "preview-app.labels" . | nindent 8 }}
+        {{- include "preview-app.databaseSelectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 20
+      # The same context the application runs under. Postgres does not need
+      # root: the official image only chowns its data directory when it happens
+      # to be running as root, and fsGroup below makes that unnecessary.
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: postgres
+          image: {{ .Values.database.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.database.port }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.database.name | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.database.user | quote }}
+            # Derived from the cluster salt and this environment's identity —
+            # see the note on preview-app.derivedSecret. It is not a Secret
+            # object on purpose: the boundary protecting this database is the
+            # NetworkPolicy below, which admits only the application pods in
+            # this one namespace. Nothing else can open a connection to try a
+            # password at all.
+            - name: POSTGRES_PASSWORD
+              value: {{ include "preview-app.databasePassword" . | quote }}
+            # A subdirectory rather than the mount point itself, which is what
+            # the image expects when the volume may not start out empty.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.database.user | quote }}, "-d", {{ .Values.database.name | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.database.user | quote }}, "-d", {{ .Values.database.name | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.database.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # readOnlyRootFilesystem is inherited from the application's
+            # container context, so every path Postgres writes to has to be
+            # given to it explicitly. The unix socket directory is the one
+            # that is easy to miss — without it the server starts and then
+            # fails its own readiness probe.
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "preview-app.databaseFullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: {{ .Values.database.port }}
+      targetPort: postgres
+  selector:
+    {{- include "preview-app.databaseSelectorLabels" . | nindent 4 }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# Without this, the database would be the one unprotected thing in the
+# namespace.
+#
+# The application's NetworkPolicy selects the application's pods, so it says
+# nothing about these — and a pod that no policy selects is unrestricted, which
+# would leave the database reachable from every other preview environment on
+# the cluster. That is the opposite of what adding a database was for.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "preview-app.databaseFullname" . }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "preview-app.databaseSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The application pods in this namespace, and nothing else. Not the ingress
+    # controller, not another environment, not the internet.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "preview-app.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: postgres
+          protocol: TCP
+  egress:
+    # DNS only. A database has no reason to originate traffic anywhere, and an
+    # empty egress list would deny even name resolution it needs at startup.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}
+{{- end }}
