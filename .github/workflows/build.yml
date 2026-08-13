@@ -212,6 +212,15 @@ jobs:
           # namespace per pull request.
           grep -q 'kind: Namespace' /tmp/rendered.yaml
 
+      # A header the controller has not been told to allow does not degrade
+      # gracefully — ingress-nginx denies the location, and every request to
+      # that host returns 503 while the pods report healthy throughout. This
+      # passed for a week as two literals that happened to agree, in
+      # bootstrap-cluster.sh and e2e-test.sh, while the one cluster carrying
+      # neither of them was production.
+      - name: Fail if the chart asks for a response header the controller forbids
+        run: ./scripts/check-ingress-headers.sh
+
       # The JavaScript inside github-script steps is a YAML string, so nothing
       # else checks it; a syntax error would surface minutes into a live run.
       - name: Syntax-check the scripts embedded in workflows
