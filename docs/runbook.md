@@ -4,6 +4,58 @@ Every failure listed here has actually happened while building this platform.
 Each entry says what it looks like from the outside first, because that is all
 you have when it starts.
 
+## The permanent demo is down, and what will and will not fix itself
+
+`demo.<base>` is an ArgoCD Application of its own — `preview-app-demo`, defined
+in `deploy/argocd/application-demo.yaml`. It is not a pull request and carries no
+`preview` label, so neither the ApplicationSet nor the TTL sweep can remove it.
+
+What recovers without a human, and what does not, measured rather than assumed:
+
+| Failure | Detected by | Recovers by itself | Time | URL changes |
+|---|---|---|---|---|
+| Pod deleted or OOM-killed | Deployment controller | **Yes** | seconds | no |
+| Deployment or Service deleted | ArgoCD `selfHeal` | **Yes** | under ~3 min | no |
+| Namespace deleted | ArgoCD `selfHeal` + `CreateNamespace` | **Yes** | under ~3 min | no |
+| Node rebooted | k3s systemd unit, enabled at install | **Yes** | ~2 min after boot | no |
+| **VM stopped or deallocated** | **nothing** | **No** | until a human runs `az vm start` | no |
+| VM destroyed and recreated | nothing | No — `terraform apply` then `bootstrap-cluster.sh` | tens of minutes | no, if the static IP is reattached |
+
+The two rows that matter are the ones in bold, and both are worse than this
+repository used to claim.
+
+**Nothing detects a stopped VM.** `spot-watchdog.yml` exists for exactly this and
+runs every ten minutes, but its job is gated on `vars.AZURE_CLIENT_ID`, which is
+not set — this repository has no Actions secrets at all, so the federated Azure
+app registration it needs was never created. Every run since the workflow reached
+`main` on 2026-08-13 has completed as `skipped`. A green run history and an inert
+watchdog look identical from the outside, which is the failure mode this entry
+exists to name.
+
+**The VM is not Spot.** `az vm show` reports `priority: Regular` and
+`evictionPolicy: null`. `docs/cost.md` and ADR 0008 describe spot capacity that
+the live VM does not use, so the eviction the watchdog was written to catch
+cannot occur as currently configured, and the bill is on-demand rather than the
+figure in that document.
+
+What genuinely holds: the public IP is `Static`/Standard SKU, so stopping and
+starting the VM does not change it and no hostname moves. The disk survives, k3s
+comes back on boot, and ArgoCD reconciles the workloads from git afterwards.
+
+```bash
+# is it the VM, or something inside it?
+az vm get-instance-view -g gitops-k3s-rg -n gitops-k3s \
+  --query "instanceView.statuses[?starts_with(code,'PowerState')].displayStatus" -o tsv
+
+# if it is deallocated — this is the human step nothing performs for you
+az vm start -g gitops-k3s-rg -n gitops-k3s
+
+# then watch it come back on its own
+until kubectl get nodes 2>/dev/null | grep -q ' Ready'; do sleep 10; done
+kubectl get applications -n argocd
+curl -o /dev/null -w '%{http_code}\n' https://demo.20-24-211-179.nip.io/
+```
+
 ## A pull request has no preview environment
 
 Check what the label says before checking the cluster — the label is the
