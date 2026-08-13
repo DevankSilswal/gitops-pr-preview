@@ -8,6 +8,6 @@ repo: gitops-pr-preview
 image: ghcr.io/devanksilswal/preview-app
 port: '3000'
 healthPath: "/api/health"
-database: "false"
-workerEnabled: "false"
-workerCommand: ""
+database: 'false'
+workerEnabled: 'false'
+workerCommand: ''
