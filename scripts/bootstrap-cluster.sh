@@ -307,6 +307,7 @@ MANIFESTS=(
   appproject-previews.yaml   # referenced by the ApplicationSet below
   applicationset-preview.yaml
   application-prod.yaml
+  application-demo.yaml      # the permanent demo; owned by nothing that expires
   webhook-ingress.yaml       # lets GitHub push changes instead of ArgoCD polling
 )
 
