@@ -87,7 +87,20 @@ auth:
   # Search engines index anything they can reach. Independent of the password,
   # because a misconfigured auth annotation should not also mean the
   # environment gets crawled — and a crawler already let in cannot be un-told.
-  noIndex: true
+  #
+  # Off by default, and that default is a scar. The header is delivered by a
+  # `custom-headers` annotation, and ingress-nginx does not ignore an annotation
+  # naming a header its `global-allowed-response-headers` list does not carry:
+  # it denies the whole location, so every request to that host returns 503.
+  # The setting lives in the controller, which this chart cannot see and does
+  # not own, so a cluster bootstrapped before the setting existed takes its own
+  # site down the moment it syncs a chart that asks for the header. That is
+  # exactly what happened to production on 2026-08-13.
+  #
+  # A default that only works on correctly configured clusters is not a default.
+  # Turn it on per environment once the controller's allow-list really contains
+  # X-Robots-Tag — bootstrap-cluster.sh sets it on a fresh cluster.
+  noIndex: false
 
 # Cluster-wide secret material, generated once by bootstrap-cluster.sh and
 # passed in by the ApplicationSet. Never committed.
