@@ -1,11 +1,23 @@
 name: preview-lifecycle
 
-# Controls which pull requests are entitled to a preview environment.
+# Controls which pull requests are entitled to a preview environment, across
+# every onboarded repository rather than only this one.
 #
 # The ApplicationSet only generates Applications for PRs labelled `preview`, so
 # adding and removing that label is the entire lifecycle API. Expiry is
-# therefore declarative: nothing here deletes a namespace: removing the label
+# therefore declarative: nothing here deletes a namespace — removing the label
 # changes desired state and ArgoCD prunes the environment on its own.
+#
+# Both jobs used to ask GitHub about `context.repo` and nothing else. The cost
+# was visible in production for nine days: notes-board PR #1 was last touched on
+# 2026-08-05, carried the `preview` label the whole time, and the three-day
+# sweep never expired it because the sweep could not see that repository at all.
+# Capacity was counted the same way, which made MAX_ENVIRONMENTS a cap on this
+# repository plus an unbounded number everywhere else.
+#
+# The decisions now live in scripts/lifecycle.js, where the cases that matter —
+# a repository that returns 403, a timestamp that will not parse — are reachable
+# from scripts/lifecycle.test.js instead of only from an incident.
 
 on:
   pull_request_target:
@@ -19,17 +31,32 @@ on:
         description: 'Override the TTL for this run. 0 expires every idle environment immediately.'
         required: false
         default: ''
+      dry_run:
+        description: 'Report what would happen without changing any label.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   pull-requests: write
+  contents: read
+
+# Admission and expiry both read the same global count and then act on it. Run
+# two of them at once and each can see 7/8 and admit, which is how a cap of
+# eight becomes nine. Serialising the workflow is the smallest mechanism that
+# removes the race, and this is a lifecycle sweep — it has no need to be
+# concurrent.
+concurrency:
+  group: preview-lifecycle
+  cancel-in-progress: false
 
 env:
   # A preview environment expires after this many days without a push.
   TTL_DAYS: 3
-  # How many may exist at once. Per-namespace quotas stop one environment
-  # starving another, but nothing stops the tenth from exhausting a single
-  # node — this is where that bound lives, because the label is what admits an
-  # environment in the first place.
+  # How many may exist at once, across ALL onboarded repositories. Per-namespace
+  # quotas stop one environment starving another, but nothing stops the ninth
+  # from exhausting a single node — this is where that bound lives, because the
+  # label is what admits an environment in the first place.
   MAX_ENVIRONMENTS: 8
 
 jobs:
@@ -39,11 +66,15 @@ jobs:
     timeout-minutes: 10
     steps:
       # This job runs on pull_request_target, which carries write permissions.
-      # It therefore never checks out or executes the pull request's code — it
-      # only reads event metadata. Building a fork's code under this trigger
-      # would hand a stranger's branch a token that can push images and write
-      # to the repository, which is precisely the supply-chain attack the
-      # trigger is infamous for.
+      # It therefore never checks out or executes the pull request's code. The
+      # ref is pinned to the base repository's default branch explicitly:
+      # scripts/lifecycle.js has to come from a reviewed commit, because a fork
+      # that could supply it would be supplying code this token then runs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           # A repository variable overrides the default, so the cap can be
@@ -52,85 +83,82 @@ jobs:
           MAX_ENVIRONMENTS: ${{ vars.MAX_ENVIRONMENTS || env.MAX_ENVIRONMENTS }}
         with:
           script: |
+            const lc = require(`${process.env.GITHUB_WORKSPACE}/scripts/lifecycle.js`);
             const pr = context.payload.pull_request;
             const { owner, repo } = context.repo;
 
             // Dependency bumps do not need somewhere to click. Left alone they
             // arrive several at a time and take most of the capacity of a
             // single-node cluster; label one by hand on the rare occasion a
-            // bump is worth looking at.
-            if (pr.user.type === 'Bot') {
-              core.info(`#${pr.number} was opened by ${pr.user.login}; no environment`);
+            // dependency actually changes what a reviewer would see.
+            if (pr.user && pr.user.login === 'dependabot[bot]') {
+              core.info(`#${pr.number} is from dependabot; no preview granted`);
               return;
             }
 
-            // A fork's build runs with a read-only token, so it cannot publish
-            // the image the environment needs. Say so, rather than granting a
-            // label that produces an environment stuck on ImagePullBackOff.
-            if (pr.head.repo.full_name !== `${owner}/${repo}`) {
-              await github.rest.issues.createComment({
-                owner, repo, issue_number: pr.number,
-                body: [
-                  'No preview environment for this pull request.',
-                  '',
-                  'It comes from a fork, and builds triggered by forks get a',
-                  'read-only token that cannot publish to the registry. Building',
-                  'it with write access would mean running an unreviewed branch',
-                  'with credentials that can push images to this repository.',
-                  '',
-                  'A maintainer can push the branch here to get an environment.',
-                ].join('\n'),
-              });
-              core.info(`PR #${pr.number} is from a fork; no label granted`);
-              return;
-            }
-
-            // Refuse past the cap rather than letting the node decide by
-            // evicting somebody's environment mid-review.
-            // Number(undefined) is NaN and every comparison against it is
-            // false, so a missing value would disable the cap silently rather
-            // than loudly. Fail instead.
             const max = Number(process.env.MAX_ENVIRONMENTS);
-            if (!Number.isInteger(max) || max < 1) {
+            if (!Number.isInteger(max) || max <= 0) {
               core.setFailed(`MAX_ENVIRONMENTS must be a positive integer, got '${process.env.MAX_ENVIRONMENTS}'`);
               return;
             }
-            const open = await github.paginate(github.rest.pulls.list, {
-              owner, repo, state: 'open', per_page: 100,
-            });
-            const active = open.filter((p) => p.labels.some((l) => l.name === 'preview'));
 
-            if (active.length >= max) {
+            const repos = lc.loadOnboarded(`${process.env.GITHUB_WORKSPACE}/deploy/platform/onboarded`);
+            const listPRs = (r) => github.paginate(github.rest.pulls.list, {
+              owner: r.owner, repo: r.repo, state: 'open', per_page: 100,
+            });
+            const { previews, unknownRepos, states } = await lc.discover({
+              repos, listPRs, now: Date.now(), ttlDays: Number(process.env.TTL_DAYS),
+            });
+
+            for (const s of states.filter((s) => s.status !== 'OK')) {
+              core.warning(`${s.owner}/${s.repo} did not answer: ${s.error}`);
+            }
+
+            const cap = lc.capacity({ previews, unknownRepos, max });
+            const decision = cap.admit(`${owner}/${repo}#${pr.number}`);
+            core.info(`global capacity ${cap.used}/${cap.max} across ${states.length} onboarded repositories`);
+
+            if (!decision.admit) {
               await github.rest.issues.createComment({
                 owner, repo, issue_number: pr.number,
                 body: [
-                  `No preview environment yet — ${active.length} of ${max} are already running.`,
+                  `No preview environment yet — ${decision.reason}.`,
                   '',
-                  'The cluster is a single node, so environments are capped rather',
-                  'than allowed to evict each other. One will free up when another',
-                  'pull request is closed or goes idle past its TTL, or you can add',
-                  'the `preview` label by hand to take a slot now.',
+                  'The cluster is a single node, so environments are capped across',
+                  'every onboarded repository rather than allowed to evict each',
+                  'other. One will free up when another pull request is closed or',
+                  'goes idle past its TTL, or you can add the `preview` label by',
+                  'hand to take a slot now.',
                 ].join('\n'),
               });
-              core.info(`at capacity (${active.length}/${max}); no label granted for #${pr.number}`);
+              core.info(`no label granted for #${pr.number}: ${decision.reason}`);
               return;
             }
 
             await github.rest.issues.addLabels({
-              owner, repo, issue_number: pr.number, labels: ['preview'],
+              owner, repo, issue_number: pr.number, labels: [lc.PREVIEW_LABEL],
             });
-            core.info(`granted preview to #${pr.number} (${active.length + 1}/${max})`);
+            core.info(`granted preview to #${pr.number} (${decision.reason})`);
 
   expire:
     if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           TTL_OVERRIDE: ${{ inputs.ttl_days }}
+          DRY_RUN: ${{ inputs.dry_run }}
         with:
           script: |
+            const lc = require(`${process.env.GITHUB_WORKSPACE}/scripts/lifecycle.js`);
+            const now = Date.now();
+            const dryRun = process.env.DRY_RUN === 'true';
+
             // The override exists so the sweep can be exercised on demand
             // rather than only being observed days later on the schedule.
             const ttlDays = Number(process.env.TTL_OVERRIDE || process.env.TTL_DAYS);
@@ -138,41 +166,68 @@ jobs:
               core.setFailed(`invalid ttl_days: ${process.env.TTL_OVERRIDE}`);
               return;
             }
-            core.info(`expiring preview environments idle for more than ${ttlDays} day(s)`);
-            const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
 
-            const prs = await github.paginate(github.rest.pulls.list, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              per_page: 100,
+            const repos = lc.loadOnboarded(`${process.env.GITHUB_WORKSPACE}/deploy/platform/onboarded`);
+            const listPRs = (r) => github.paginate(github.rest.pulls.list, {
+              owner: r.owner, repo: r.repo, state: 'open', per_page: 100,
             });
+            const { previews, unknownRepos, states } = await lc.discover({ repos, listPRs, now, ttlDays });
 
-            for (const pr of prs) {
-              const labelled = pr.labels.some((l) => l.name === 'preview');
-              if (!labelled) continue;
+            // GITHUB_TOKEN is scoped to the repository whose workflow is
+            // running. Every other onboarded repository can be read — they are
+            // public — and cannot be written, so an expired environment there
+            // is reported by name rather than reaped by a call that would 403.
+            // The unblocking action is a fine-grained PAT with `pull_requests:
+            // write` on the onboarded repositories, added as an Actions secret;
+            // this repository currently has no Actions secrets at all.
+            const canWrite = (p) => p.owner === context.repo.owner && p.repo === context.repo.repo;
 
-              // updated_at moves on pushes, comments and reviews, so an active
-              // review keeps its environment alive without any manual renewal.
-              if (new Date(pr.updated_at).getTime() >= cutoff) continue;
+            const cap = lc.capacity({ previews, unknownRepos, max: Number(process.env.MAX_ENVIRONMENTS) });
+            const plan = lc.cleanupPlan({ previews, states, canWrite });
 
-              await github.rest.issues.removeLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-                name: 'preview',
-              });
+            const deleted = [];
+            for (const target of plan.delete) {
+              if (dryRun) { deleted.push({ ...target, result: 'dry-run: would remove the preview label' }); continue; }
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: target.owner, repo: target.repo,
+                  issue_number: target.number, name: lc.PREVIEW_LABEL,
+                });
+                await github.rest.issues.createComment({
+                  owner: target.owner, repo: target.repo, issue_number: target.number,
+                  body: [
+                    `Preview environment expired after ${ttlDays} days without activity.`,
+                    '',
+                    'Add the `preview` label to bring it back.',
+                  ].join('\n'),
+                });
+                deleted.push({ ...target, result: 'ok' });
+              } catch (err) {
+                // Already gone is not a failure. The label may have been removed
+                // by hand between discovery and now, and a sweep that cannot be
+                // run twice is a sweep that cannot be trusted once.
+                if (err.status === 404) { deleted.push({ ...target, result: 'ok (label already absent)' }); continue; }
+                // One repository failing must not undo or block the others.
+                deleted.push({ ...target, result: `FAILED: ${err.status || ''} ${err.message}` });
+                core.warning(`${target.identity}: ${err.message}`);
+              }
+            }
 
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-                body: [
-                  `Preview environment expired after ${ttlDays} days without activity.`,
-                  '',
-                  'Add the `preview` label to bring it back.',
-                ].join('\n'),
-              });
+            const { text, overall } = lc.renderSummary({ now, states, previews, cap, plan, deleted, dryRun });
+            core.info(text);
+            await core.summary.addHeading('Preview lifecycle').addCodeBlock(text, 'text').write();
 
-              core.info(`expired preview for PR #${pr.number}`);
+            const unreapable = plan.skip.filter((s) => /cannot write/.test(s.reason));
+            for (const s of unreapable) {
+              core.warning(`${s.identity} is expired and cannot be reaped by this credential: ${s.reason}`);
+            }
+
+            // A run that could not delete something it decided to delete has
+            // failed and should say so. A run that merely could not reach a
+            // repository, or lacks write access to one, is PARTIAL: real, worth
+            // surfacing, and not something a red X every hour would improve.
+            if (deleted.some((d) => String(d.result).startsWith('FAILED'))) {
+              core.setFailed('one or more label removals failed; see the summary');
+            } else if (overall !== 'PASS' || unreapable.length) {
+              core.warning(`lifecycle run finished PARTIAL: ${plan.unknown.length} unknown repository/repositories, ${unreapable.length} expired but unreapable`);
             }
