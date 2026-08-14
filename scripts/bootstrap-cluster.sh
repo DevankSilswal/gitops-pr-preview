@@ -304,7 +304,14 @@ export PROD_IMAGE_TAG=latest
 # running the previous ApplicationSet, looking for all the world like the new
 # one had been applied.
 MANIFESTS=(
+  # Wave 1 of the control plane now lives in deploy/platform-chart and is
+  # reconciled by the `platform` Application below: the ClusterIssuers and this
+  # AppProject. It is still applied here because bootstrap has to be able to
+  # rebuild a cluster from nothing, and ArgoCD cannot reconcile a project that
+  # does not yet exist. ArgoCD owns the fields afterwards, via ServerSideApply,
+  # so the two do not fight: bootstrap establishes, GitOps maintains.
   appproject-previews.yaml   # referenced by the ApplicationSet below
+  application-platform.yaml  # app-of-apps root; takes ownership of wave 1
   applicationset-preview.yaml
   application-prod.yaml
   application-demo.yaml      # the permanent demo; owned by nothing that expires

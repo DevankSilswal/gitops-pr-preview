@@ -1,0 +1,28 @@
+# The values the control plane is rendered from.
+#
+# These used to be environment variables read by scripts/render-argocd.rb at
+# apply time, which meant the desired state existed only in whatever shell last
+# ran the bootstrap. That is the drift this chart exists to end: on 2026-08-13
+# the live cluster's ingress configuration, ApplicationSet and chart had each
+# diverged from the repository in a different direction, and the ingress one
+# took production down for the better part of an hour.
+#
+# The base host is still the node's IP in dash form. Removing that hardcoding
+# is P0-6 and is deliberately not attempted here — moving a value from a shell
+# variable into git is the change; deriving it from infrastructure is the next
+# one.
+baseHost: 20-24-211-179.nip.io
+
+# Where preview environments get their chart from. Mirrors
+# deploy/platform/platform.yaml, which the ApplicationSet renderer still reads.
+chartRepo: https://github.com/DevankSilswal/gitops-pr-preview.git
+
+# cert-manager's ACME account address. Not a secret — it appears in every
+# certificate this cluster has ever been issued.
+acmeEmail: partner0ship@gmail.com
+
+# TLS as the cluster runs it today. Per-host issuance, production issuer.
+# Wildcard is P0-7; this chart must preserve current behaviour, not change it.
+tls:
+  enabled: true
+  clusterIssuer: letsencrypt-prod

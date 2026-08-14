@@ -1,0 +1,16 @@
+# A self-signed issuer, so the TLS path can be exercised on a cluster that the
+# public internet cannot reach.
+#
+# Let's Encrypt validates over HTTP-01, which requires its servers to connect
+# back to the hostname being certified. On a local cluster that hostname points
+# at 127.0.0.1, so validation can never succeed and the ACME issuers are
+# untestable there. Issuing locally instead proves everything that is actually
+# ours: the chart's TLS block, the cert-manager annotation, certificate
+# issuance, the secret it produces, and ingress-nginx serving it. The only part
+# left unproven is ACME itself.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned
+spec:
+  selfSigned: {}
