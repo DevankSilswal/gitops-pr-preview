@@ -311,12 +311,19 @@ MANIFESTS=(
   # does not yet exist. ArgoCD owns the fields afterwards, via ServerSideApply,
   # so the two do not fight: bootstrap establishes, GitOps maintains.
   appproject-previews.yaml   # referenced by the ApplicationSet below
-  application-platform.yaml  # app-of-apps root; takes ownership of wave 1
+  application-platform.yaml  # app-of-apps root; renders everything below it
   applicationset-preview.yaml
-  application-prod.yaml
-  application-demo.yaml      # the permanent demo; owned by nothing that expires
-  webhook-ingress.yaml       # lets GitHub push changes instead of ArgoCD polling
 )
+
+# Production, the permanent demo and the webhook ingress are deliberately NOT
+# here. They are templates in deploy/platform-chart, and the `platform`
+# Application above reconciles them. Applying them here as well would mean this
+# script and ArgoCD both believing they own the Application that manages
+# production — the duplicate ownership that made the ingress drift of
+# 2026-08-13 possible in the first place, reproduced one layer up.
+#
+# The ordering still works for a cluster built from nothing: this script creates
+# the project and the app-of-apps root, and ArgoCD creates the rest from git.
 
 for name in "${MANIFESTS[@]}"; do
   echo "  applying $name"
