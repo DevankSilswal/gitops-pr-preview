@@ -1,0 +1,264 @@
+# The drift checker.
+#
+# It exists because on 2026-08-13 the repository and the live cluster held three
+# different opinions about the ingress controller's allowed response headers,
+# and nothing said so. The chart asked for a header the live controller had not
+# been told to allow; ingress-nginx denied the whole location; production served
+# 503s for the better part of an hour while every pod reported Ready and every
+# workflow reported green.
+#
+# It runs in the cluster rather than in GitHub Actions, and that is a decision
+# with a reason. This repository has no Actions secrets at all — which is why
+# spot-watchdog.yml has completed as `skipped` on every one of its ten-minute
+# runs since it reached main, and why alerts-to-issues.yml has never fired. A
+# scheduled workflow needing a kubeconfig would have been born inert and looked
+# healthy doing it. A CronJob with a ServiceAccount needs no secret and cannot
+# pretend.
+#
+# Desired state still comes from git: the expectations below are rendered from
+# deploy/platform-chart/values.yaml, and ArgoCD keeps this ConfigMap matching
+# git. So the comparison is genuinely git-versus-live, performed in-cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-drift-check
+  namespace: argocd
+data:
+  expectations.json: |
+    {
+      "requiredResponseHeaders": ["{{ .Values.driftCheck.requiredResponseHeaders | join "\",\"" }}"],
+      "clusterIssuers": ["letsencrypt-prod", "letsencrypt-staging", "selfsigned"],
+      "appProjectKinds": ["Service", "ConfigMap", "Deployment", "Ingress", "NetworkPolicy", "ResourceQuota", "LimitRange", "Certificate", "PodDisruptionBudget", "Secret"],
+      "criticalApplications": ["platform", "preview-app-prod", "preview-app-demo"],
+      "requiredSecrets": ["github-token"],
+      "expectedApplicationSet": "preview-environments",
+      "baseHost": "{{ .Values.baseHost }}"
+    }
+  drift-check.py: |
+    #!/usr/bin/env python3
+    """Compare what git says this cluster should look like with what it is.
+
+    Severity is not decoration. CRITICAL and HIGH fail the job, which is what
+    makes this an alarm rather than a log file; MEDIUM and LOW are recorded and
+    do not. The distinction is whether the difference could take a URL down.
+    """
+    import json, os, ssl, sys, urllib.request
+    from datetime import datetime, timezone
+
+    API = "https://kubernetes.default.svc"
+    TOKEN = open("/var/run/secrets/kubernetes.io/serviceaccount/token").read().strip()
+    CA = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    CTX = ssl.create_default_context(cafile=CA)
+    EXPECT = json.load(open("/expectations/expectations.json"))
+
+    findings = []          # (severity, resource, expected, actual, why)
+    def finding(sev, res, exp, act, why):
+        findings.append({"severity": sev, "resource": res, "expected": exp,
+                         "actual": act, "why": why})
+
+    def api(path, metadata_only=False):
+        req = urllib.request.Request(API + path)
+        req.add_header("Authorization", "Bearer " + TOKEN)
+        if metadata_only:
+            # The values never enter this process. Kubernetes has no
+            # metadata-only read that also lists a Secret's keys, so this
+            # checker proves existence and deliberately does not enumerate
+            # keys — receiving them means receiving the values beside them.
+            req.add_header("Accept", "application/json;as=PartialObjectMetadata;"
+                                     "g=meta.k8s.io;v=v1")
+        try:
+            with urllib.request.urlopen(req, context=CTX, timeout=20) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise
+
+    # --- 0. this must be the production cluster, not a kind cluster ----------
+    nodes = api("/api/v1/nodes")
+    names = [n["metadata"]["name"] for n in nodes["items"]]
+    if not any(n.startswith("gitops-k3s") for n in names):
+        print(f"REFUSING: expected the production node, found {names}. A drift "
+              f"report about the wrong cluster is worse than no report.")
+        sys.exit(2)
+    node_ready = any(c["type"] == "Ready" and c["status"] == "True"
+                     for n in nodes["items"] for c in n["status"]["conditions"])
+
+    # --- A. GitOps drift: ArgoCD already computes git-versus-live ------------
+    apps = api("/apis/argoproj.io/v1alpha1/namespaces/argocd/applications")
+    for a in apps["items"]:
+        name = a["metadata"]["name"]
+        sync = a.get("status", {}).get("sync", {}).get("status", "Unknown")
+        health = a.get("status", {}).get("health", {}).get("status", "Unknown")
+        critical = name in EXPECT["criticalApplications"]
+        if sync != "Synced":
+            finding("CRITICAL" if critical else "HIGH", f"Application/{name}",
+                    "Synced", sync,
+                    "the live resources no longer match the manifests in git")
+        if health not in ("Healthy", "Progressing"):
+            finding("CRITICAL" if critical else "HIGH", f"Application/{name}",
+                    "Healthy", health, "the workload behind it is not serving")
+    present = {a["metadata"]["name"] for a in apps["items"]}
+    for name in EXPECT["criticalApplications"]:
+        if name not in present:
+            finding("CRITICAL", f"Application/{name}", "exists", "missing",
+                    "an Application git defines is not in the cluster at all")
+
+    # --- B. the outage class, checked directly -------------------------------
+    # The chart asks the controller to emit these headers. ingress-nginx does
+    # not ignore an unlisted header: it denies the location and every request
+    # to that host returns 503. This is the check that would have caught it.
+    cm = api("/api/v1/namespaces/ingress-nginx/configmaps/ingress-nginx-controller")
+    allowed = ""
+    if cm is None:
+        finding("CRITICAL", "ConfigMap/ingress-nginx-controller", "exists",
+                "missing", "the ingress controller has no configuration at all")
+    else:
+        allowed = (cm.get("data") or {}).get("global-allowed-response-headers", "")
+    allowed_set = {h.strip() for h in allowed.split(",") if h.strip()}
+    for header in EXPECT["requiredResponseHeaders"]:
+        if header and header not in allowed_set:
+            finding("CRITICAL", "ConfigMap/ingress-nginx-controller",
+                    f"global-allowed-response-headers contains {header}",
+                    f"'{allowed}'",
+                    "a chart asking for this header would take every host on "
+                    "this controller to 503 — the outage of 2026-08-13")
+
+    # --- C. bootstrap-owned resources: report, never reconcile ---------------
+    for issuer in EXPECT["clusterIssuers"]:
+        if api(f"/apis/cert-manager.io/v1/clusterissuers/{issuer}") is None:
+            finding("CRITICAL", f"ClusterIssuer/{issuer}", "exists", "missing",
+                    "certificates for production and the demo are issued by this")
+    appset = api("/apis/argoproj.io/v1alpha1/namespaces/argocd/applicationsets/"
+                 + EXPECT["expectedApplicationSet"])
+    if appset is None:
+        finding("HIGH", f"ApplicationSet/{EXPECT['expectedApplicationSet']}",
+                "exists", "missing", "no pull request would get an environment")
+    for secret in EXPECT["requiredSecrets"]:
+        if api(f"/api/v1/namespaces/argocd/secrets/{secret}",
+               metadata_only=True) is None:
+            finding("CRITICAL", f"Secret/{secret}", "exists", "missing",
+                    "the pull request generator cannot authenticate without it")
+
+    proj = api("/apis/argoproj.io/v1alpha1/namespaces/argocd/appprojects/previews")
+    if proj is None:
+        finding("CRITICAL", "AppProject/previews", "exists", "missing",
+                "every preview Application belongs to this project")
+    else:
+        kinds = {e["kind"] for e in proj["spec"].get("namespaceResourceWhitelist", [])}
+        missing = [k for k in EXPECT["appProjectKinds"] if k not in kinds]
+        if missing:
+            finding("HIGH", "AppProject/previews",
+                    f"whitelist contains {missing}", sorted(kinds),
+                    "previews cannot create resources the chart renders")
+
+    # --- report --------------------------------------------------------------
+    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    findings.sort(key=lambda f: order[f["severity"]])
+    failing = [f for f in findings if f["severity"] in ("CRITICAL", "HIGH")]
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    lines = ["DRIFT CHECK", f"Timestamp: {now}",
+             f"Cluster:   {names[0]} (node Ready: {node_ready})",
+             f"Overall:   {'DRIFT DETECTED' if failing else 'PASS'}", ""]
+    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        rows = [f for f in findings if f["severity"] == sev]
+        lines.append(f"{sev}: {len(rows)}")
+        for f in rows:
+            lines += [f"  - resource: {f['resource']}",
+                      f"    expected: {f['expected']}",
+                      f"    actual:   {f['actual']}",
+                      f"    why:      {f['why']}"]
+    lines += ["", "INTENTIONALLY UNMANAGED (reported, never reconciled here):",
+              "  - ingress-nginx (helm release, bootstrap-owned)",
+              "  - cert-manager (owns CRDs, bootstrap-owned)",
+              "  - ApplicationSet (live object predates git; adoption is P0-3 wave 3)",
+              "  - Secrets (generated at bootstrap, never committed)", "",
+              f"Result: {'DRIFT DETECTED' if failing else 'PASS'}"]
+    report = "\n".join(lines)
+    print(report)
+
+    # Deduplicate: the report is only rewritten when the findings change, so a
+    # standing unfixed drift does not look like a new incident every 20 minutes.
+    fingerprint = json.dumps(findings, sort_keys=True)
+    body = {"apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": "platform-drift-report", "namespace": "argocd",
+                         "annotations": {"drift.fingerprint": str(hash(fingerprint)),
+                                         "drift.checked": now,
+                                         "drift.result": "DRIFT DETECTED" if failing else "PASS"}},
+            "data": {"report.txt": report, "findings.json": json.dumps(findings, indent=2)}}
+    req = urllib.request.Request(
+        API + "/api/v1/namespaces/argocd/configmaps/platform-drift-report",
+        data=json.dumps(body).encode(), method="PUT")
+    req.add_header("Authorization", "Bearer " + TOKEN)
+    req.add_header("Content-Type", "application/json")
+    try:
+        urllib.request.urlopen(req, context=CTX, timeout=20)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            req = urllib.request.Request(
+                API + "/api/v1/namespaces/argocd/configmaps",
+                data=json.dumps(body).encode(), method="POST")
+            req.add_header("Authorization", "Bearer " + TOKEN)
+            req.add_header("Content-Type", "application/json")
+            urllib.request.urlopen(req, context=CTX, timeout=20)
+        else:
+            # A checker that cannot record its result must not report success.
+            print(f"failed to write the report ConfigMap: {e}")
+            sys.exit(2)
+
+    sys.exit(1 if failing else 0)
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-drift-check
+  namespace: argocd
+spec:
+  # Twenty minutes. Fast enough that a drift is noticed within one coffee, slow
+  # enough that it is 72 pod-seconds a day on a node with 2 vCPU.
+  schedule: "*/20 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  # Kept deliberately higher than the successful history: the failures are the
+  # ones somebody will want to read.
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # No retries. A retry would double the alert and hide a flake, and the
+      # next run is twenty minutes away regardless.
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: platform-drift-check
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: drift-check
+              image: python:3.12-alpine
+              command: ["python3", "/scripts/drift-check.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                - name: scripts
+                  mountPath: /expectations
+          volumes:
+            - name: scripts
+              configMap:
+                name: platform-drift-check

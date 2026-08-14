@@ -1,0 +1,82 @@
+# Read-only access for the drift checker, and one narrow write.
+#
+# Least privilege on purpose: this thing exists to notice that something in the
+# cluster stopped matching git, and a checker that could also change the cluster
+# would be a second writer — the exact failure it is meant to detect.
+#
+# The one write is its own report ConfigMap, restricted by name.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-drift-check
+  namespace: argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-drift-check
+rules:
+  # Live state of what the platform chart owns, plus the unmanaged resources
+  # this task must report on without touching.
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "applicationsets", "appprojects"]
+    verbs: ["get", "list"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["clusterissuers", "certificates"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["resourcequotas", "namespaces"]
+    verbs: ["get", "list"]
+  # Existence only, by name. The script requests these as PartialObjectMetadata,
+  # so the values never enter the checker's process at all — a stronger property
+  # than promising not to print them. The cost is that it cannot enumerate a
+  # Secret's keys, because Kubernetes returns keys and values together; that
+  # limitation is deliberate and is recorded in the P0-4 report.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["github-token", "preview-secret-salt"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-drift-check
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-drift-check
+subjects:
+  - kind: ServiceAccount
+    name: platform-drift-check
+    namespace: argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-drift-check-report
+  namespace: argocd
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "patch"]
+    resourceNames: ["platform-drift-report"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-drift-check-report
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: platform-drift-check-report
+subjects:
+  - kind: ServiceAccount
+    name: platform-drift-check
+    namespace: argocd

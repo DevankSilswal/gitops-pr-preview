@@ -26,3 +26,16 @@ acmeEmail: partner0ship@gmail.com
 tls:
   enabled: true
   clusterIssuer: letsencrypt-prod
+
+# What the drift checker holds the live cluster to. Rendered into its
+# expectations ConfigMap, so the desired state it compares against is git's,
+# kept current by ArgoCD rather than copied by hand.
+driftCheck:
+  # Every response header the preview chart may ask the ingress controller to
+  # emit. ingress-nginx denies the entire location for an unlisted header, so a
+  # mismatch here is not a degradation — it is a 503 on every host the
+  # controller serves. This list must stay equal to
+  # deploy/platform/ingress-nginx-values.yaml; scripts/check-ingress-headers.sh
+  # is what keeps the chart from asking for anything outside it.
+  requiredResponseHeaders:
+    - X-Robots-Tag
