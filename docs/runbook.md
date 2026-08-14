@@ -4,6 +4,47 @@ Every failure listed here has actually happened while building this platform.
 Each entry says what it looks like from the outside first, because that is all
 you have when it starts.
 
+## The node's address changed, or the VM was replaced
+
+Every hostname this platform serves is `<something>.<address-in-dashes>.nip.io`,
+so the address changing renames every URL at once. What survives is worth
+knowing before the panic:
+
+| Resource | Terraform | Survives VM replacement | Effect |
+|---|---|---|---|
+| Public IP | `azurerm_public_ip.main`, **Static**, Standard SKU | **Yes** — a separate resource from the VM | hostnames do not change |
+| NIC | `azurerm_network_interface.main` | **Yes** — separate resource | — |
+| OS disk | inline `os_disk` in `azurerm_linux_virtual_machine.k3s` | **No** — destroyed with the VM | k3s, ArgoCD and every environment are gone |
+| k3s state | on that disk | No | rebuilt by bootstrap |
+| ArgoCD state | on that disk | No | rebuilt from git by bootstrap |
+| Demo URL | derived from the IP | **Yes**, provided the IP resource is not destroyed | — |
+
+So the ordinary case — `terraform apply` replacing the VM — keeps every URL and
+loses the cluster, which the bootstrap rebuilds from git. The case that renames
+everything is destroying the public IP resource itself, which only happens on a
+full `terraform destroy` or if someone removes it from the configuration.
+
+If the address does change:
+
+```bash
+./scripts/sync-base-host.sh            # what Terraform says vs what git says
+./scripts/sync-base-host.sh --write    # update the generated value
+git commit -am 'chore: new node address'   # ArgoCD deploys from git, not from here
+gh variable set PREVIEW_BASE_HOST --body "$(awk '/^baseHost:/ {print $2}' deploy/platform-chart/values.yaml)"
+./scripts/bootstrap-cluster.sh         # ApplicationSet and wildcard are bootstrap-owned
+```
+
+Certificates do not follow automatically: cert-manager holds certificates for
+the old hostnames and will request new ones the first time an Ingress asks for
+the new ones. Expect a minute or two of untrusted TLS on each host while that
+happens, and note that Let's Encrypt's rate limit is per registered domain —
+`nip.io` — and shared with everybody else using it.
+
+**What does not happen:** nothing detects the change. There is no watchdog on
+the address, and `spot-watchdog.yml` — which would have been the place — has
+completed as `skipped` on every run since it reached `main`, because it is gated
+on an Actions variable this repository does not have.
+
 ## The permanent demo is down, and what will and will not fix itself
 
 `demo.<base>` is an ArgoCD Application of its own — `preview-app-demo`, defined

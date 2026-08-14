@@ -228,6 +228,16 @@ jobs:
       - name: Test the multi-repository lifecycle decisions
         run: node --test scripts/lifecycle.test.js
 
+      # The hostname every URL hangs off is derived from an address Terraform
+      # owns. These two keep that true: the first proves the conversion works
+      # for an address this cluster has never had, the second refuses a second
+      # file that knows the production endpoint.
+      - name: Test hostname generation
+        run: node --test scripts/base-host.test.js
+
+      - name: Fail if a second source of truth for the node address appears
+        run: ./scripts/check-base-host.sh
+
       # The JavaScript inside github-script steps is a YAML string, so nothing
       # else checks it; a syntax error would surface minutes into a live run.
       - name: Syntax-check the scripts embedded in workflows

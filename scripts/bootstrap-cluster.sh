@@ -23,8 +23,18 @@ set -euo pipefail
 NODE_IP="${1:-}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# The address is Terraform's to know. Passing it by hand still works — a
+# cluster can be bootstrapped from a laptop with no state — but the default
+# comes from the resource that owns it, so the usual path has nobody retyping
+# an address that changes when the VM is replaced.
+if [[ -z "$NODE_IP" ]] && terraform -chdir="$REPO_ROOT/infra/azure" output -raw public_ip >/dev/null 2>&1; then
+  NODE_IP="$(terraform -chdir="$REPO_ROOT/infra/azure" output -raw public_ip)"
+  echo "==> Using the address Terraform reports: $NODE_IP"
+fi
+
 if [[ -z "$NODE_IP" ]]; then
-  echo "usage: $0 <node-public-ip>" >&2
+  echo "usage: $0 [node-public-ip]" >&2
+  echo "  omit it to use 'terraform output -raw public_ip' from infra/azure" >&2
   exit 1
 fi
 
@@ -48,7 +58,9 @@ kubectl cluster-info >/dev/null
 if [[ -n "${DUCKDNS_DOMAIN:-}" ]]; then
   PREVIEW_BASE_HOST="$DUCKDNS_DOMAIN"
 else
-  PREVIEW_BASE_HOST="$(echo "$NODE_IP" | tr '.' '-').nip.io"
+  # scripts/base-host.js is the single conversion, and it validates. `tr` here
+  # turned a malformed address into a malformed hostname without complaining.
+  PREVIEW_BASE_HOST="$(node "$REPO_ROOT/scripts/base-host.js" "$NODE_IP")"
 fi
 echo "    preview hostnames will be <slug>-pr-<number>.$PREVIEW_BASE_HOST"
 

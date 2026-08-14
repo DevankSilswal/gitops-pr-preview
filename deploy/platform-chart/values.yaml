@@ -7,10 +7,19 @@
 # diverged from the repository in a different direction, and the ingress one
 # took production down for the better part of an hour.
 #
-# The base host is still the node's IP in dash form. Removing that hardcoding
-# is P0-6 and is deliberately not attempted here — moving a value from a shell
-# variable into git is the change; deriving it from infrastructure is the next
-# one.
+# GENERATED — do not edit by hand.
+#
+# Written by scripts/sync-base-host.sh from `terraform output -raw public_ip`,
+# which reads azurerm_public_ip.main. That resource is the only authority on
+# what address this platform answers on; this line is a copy of a decision made
+# there, kept in git because ArgoCD renders the chart and cannot run Terraform.
+#
+# scripts/check-base-host.sh fails CI if this value is not something
+# scripts/base-host.js would have produced, and if any other file starts
+# carrying an endpoint of its own.
+#
+# When the VM is replaced: ./scripts/sync-base-host.sh --write, commit, then
+# re-run bootstrap so the ApplicationSet and any wildcard certificate follow.
 baseHost: 20-24-211-179.nip.io
 
 # Where preview environments get their chart from. Mirrors

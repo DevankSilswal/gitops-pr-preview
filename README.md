@@ -11,6 +11,15 @@ Open a pull request and a second environment appears at
 `https://devanksilswal-gitops-pr-preview-pr-<number>.20-24-211-179.nip.io`
 within about a minute.
 
+That hostname is derived, not decided. `azurerm_public_ip.main` owns the
+address; `terraform output -raw public_ip` reports it; `scripts/base-host.js`
+converts it to the dashed nip.io form nip.io needs when an address follows a
+label; and `scripts/sync-base-host.sh` writes the result into
+`deploy/platform-chart/values.yaml`, the one place the platform reads it from.
+`scripts/check-base-host.sh` fails CI if any other file starts carrying an
+endpoint of its own. The address above is what that chain currently produces —
+if the VM is replaced, the URLs in this README change with it.
+
 It is not tied to this repository. A second one,
 [notes-board](https://github.com/DevankSilswal/notes-board) — Python, a
 different port, a different health path — is served by the same cluster with no
