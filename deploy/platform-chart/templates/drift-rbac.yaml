@@ -33,6 +33,13 @@ rules:
   - apiGroups: [""]
     resources: ["resourcequotas", "namespaces"]
     verbs: ["get", "list"]
+  # The checker refuses to run anywhere but the production node, and it cannot
+  # establish that without reading the node list. Omitting this was caught by
+  # the first live run failing with 403 rather than by anything quieter, which
+  # is the behaviour a checker should have when it cannot do its job.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
   # Existence only, by name. The script requests these as PartialObjectMetadata,
   # so the values never enter the checker's process at all — a stronger property
   # than promising not to print them. The cost is that it cannot enumerate a
