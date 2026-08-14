@@ -69,9 +69,18 @@ metadata:
   name: platform-drift-check-report
   namespace: argocd
 rules:
+  # Kubernetes RBAC cannot scope `create` by resourceName — at authorization
+  # time for a create the name does not exist yet, so a rule carrying both is
+  # silently unsatisfiable. The first live run proved it: PUT returned 404
+  # because the ConfigMap was absent, and the POST that should have created it
+  # returned 403. Create is therefore namespace-scoped and the name-restricted
+  # rule covers everything afterwards.
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "create", "update", "patch"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "update", "patch"]
     resourceNames: ["platform-drift-report"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
