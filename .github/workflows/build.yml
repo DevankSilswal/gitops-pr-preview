@@ -221,6 +221,13 @@ jobs:
       - name: Fail if the chart asks for a response header the controller forbids
         run: ./scripts/check-ingress-headers.sh
 
+      # The lifecycle decides what to delete. Its interesting cases — a
+      # repository that 403s, a timestamp that will not parse — are unreachable
+      # in production without waiting for an incident, so they are exercised
+      # here against mocked API responses instead.
+      - name: Test the multi-repository lifecycle decisions
+        run: node --test scripts/lifecycle.test.js
+
       # The JavaScript inside github-script steps is a YAML string, so nothing
       # else checks it; a syntax error would surface minutes into a live run.
       - name: Syntax-check the scripts embedded in workflows
