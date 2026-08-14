@@ -1,0 +1,38 @@
+# Let's Encrypt issuers for preview environment certificates.
+#
+# Staging is the default because preview environments create and destroy
+# hostnames constantly, and the production endpoint allows only 50 certificates
+# per registered domain per week. Staging certificates are untrusted by browsers
+# but prove the whole ACME path works; switch a specific environment to
+# letsencrypt-prod only when you need a green padlock for a demo.
+#
+# The address is a chart value now; ArgoCD renders this, not bootstrap.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: {{ .Values.acmeEmail }}
+    privateKeySecretRef:
+      name: letsencrypt-staging-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ .Values.acmeEmail }}
+    privateKeySecretRef:
+      name: letsencrypt-prod-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

@@ -1,0 +1,87 @@
+# The blast radius of a preview environment.
+#
+# This exists because of an escalation path that is easy to miss: the chart a
+# preview environment deploys is read from the pull request's own branch. Under
+# ArgoCD's `default` project — which permits every repository, every namespace
+# and every resource kind — anyone able to open a pull request could add a
+# ClusterRoleBinding to charts/preview-app/templates/ and have ArgoCD apply it
+# with its own privileges. Opening a pull request would mean owning the cluster.
+#
+# So previews get their own project, and it is deliberately narrow: this
+# repository only, `pr-*` namespaces only, and a resource list containing
+# nothing that grants permissions. Anything else a pull request adds to the
+# chart is refused by ArgoCD rather than applied.
+#
+# The allowed repository list is filled in at apply time by
+# scripts/render-argocd.rb, from the onboarded-repositories registry.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: previews
+  namespace: argocd
+spec:
+  description: Ephemeral per-pull-request environments
+
+  # The chart repository, and only that: it is the only thing any Application
+  # generated here deploys from, since the chart no longer comes from the
+  # repository under review.
+  sourceRepos:
+    - {{ .Values.chartRepo }}
+
+  # Slug-prefixed, because every onboarded repository gets its own namespace
+  # per pull request: <slug>-pr-<number>.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: '*-pr-*'
+
+  # Namespace is the only cluster-scoped object a preview may create. Without
+  # this line the chart could create ClusterRoles, CRDs or webhooks.
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+
+  namespaceResourceWhitelist:
+    - group: ''
+      kind: Service
+    - group: ''
+      kind: ConfigMap
+    - group: apps
+      kind: Deployment
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+    - group: cert-manager.io
+      kind: Certificate
+    # Rendered only above one replica, so no preview environment creates one
+    # today. It was missing here anyway, which meant the first person to raise
+    # replicaCount on a preview would have got a sync failure rather than a
+    # second pod.
+    - group: policy
+      kind: PodDisruptionBudget
+    # The htpasswd file behind a private preview. See the blacklist below for
+    # why this one kind of Secret is admitted and the rest are not.
+    - group: ''
+      kind: Secret
+
+  # Nothing here should ever create identities or grant permissions.
+  #
+  # Secret used to sit in this list. It is now on the whitelist above, and the
+  # distinction is worth being explicit about: a ServiceAccount, Role or
+  # RoleBinding grants a *caller* the ability to act on the cluster, and a
+  # preview environment must never be able to mint one. A Secret grants
+  # nothing — it is data the pods in one namespace can read, and those pods
+  # already run whatever code the pull request contains. Admitting it lets an
+  # environment hold its own basic-auth credential; it does not widen what an
+  # environment can do.
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ServiceAccount
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding

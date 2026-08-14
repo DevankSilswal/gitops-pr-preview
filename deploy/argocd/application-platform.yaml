@@ -1,0 +1,65 @@
+# The control plane, managed the way the platform manages everything else.
+#
+# Until now the cluster's own configuration was whatever scripts/bootstrap-cluster.sh
+# last applied. That is how, on 2026-08-13, the repository and the live cluster
+# came to hold three different opinions about the ingress controller's allowed
+# response headers, and how the difference was discovered: production served
+# 503s for the better part of an hour while every pod reported healthy.
+#
+# This Application is the app-of-apps root. It renders deploy/platform-chart,
+# so the answer to "where does this setting live?" becomes "git" for everything
+# the chart covers.
+#
+# Deliberately conservative, per resource group migrated:
+#
+#   prune: false      A deletion in git must not silently destroy a live
+#                     cluster-scoped resource. Removing something is therefore a
+#                     two-step operation — delete from git, then delete by hand —
+#                     which is the correct amount of friction for ClusterIssuers
+#                     and an AppProject that previews depend on.
+#
+#   selfHeal: true    This is the entire point. A manual kubectl edit must be
+#                     detected and reverted, and that is the property P0-3 is
+#                     required to demonstrate rather than assert.
+#
+# What is NOT here yet, and why — each of these is a later wave, because
+# adopting a live resource wrongly is worse than leaving it where it is:
+#
+#   ingress-nginx     A Helm release bootstrap owns. Highest risk in the
+#                     cluster: it terminates every URL including the permanent
+#                     demo. Adopting it means ArgoCD and helm both believing
+#                     they own the release.
+#   cert-manager      Owns CRDs. A mistaken prune takes every Certificate with
+#                     it, including production's and the demo's.
+#   ApplicationSet    The live object predates the repository's by a week and
+#                     carries none of the parameters merged since. Adopting it
+#                     re-templates every existing preview at once.
+#   Secrets           The GitHub token and the preview secret salt. Generated,
+#                     never committed, and correctly bootstrap-only.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/DevankSilswal/gitops-pr-preview.git
+    targetRevision: main
+    path: deploy/platform-chart
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      # The ClusterIssuers and the AppProject already exist, applied by
+      # bootstrap. Server-side apply lets ArgoCD take over the fields it manages
+      # without deleting and recreating live objects — adoption rather than
+      # replacement, which is the difference between a no-op migration and an
+      # outage.
+      - ServerSideApply=true

@@ -1,0 +1,9 @@
+apiVersion: v2
+name: platform
+description: >-
+  The cluster's own control plane, as desired state ArgoCD reconciles rather
+  than as commands a script ran once. Migrated in waves; see values.yaml for
+  which resources are in and which are still bootstrap-owned, and why.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
