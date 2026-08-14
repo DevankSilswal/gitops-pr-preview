@@ -1,0 +1,61 @@
+# Lets GitHub tell ArgoCD a pull request changed, instead of ArgoCD asking.
+#
+# Polling has two costs. One is latency: up to a full interval of dead time
+# between opening a pull request and the environment existing. The other is
+# arithmetic — ten repositories on a sixty second interval is 600 API calls an
+# hour against a limit of 5,000, which is fine now and is a ceiling later.
+#
+# A webhook removes both. The poll stays as a fallback, at a longer interval,
+# because a webhook that is missed leaves no trace and something has to
+# eventually notice.
+#
+# It goes to the ApplicationSet controller's own webhook port. argocd-server
+# also serves /api/webhook, but that one only parses push events — it answers
+# a pull_request with "event not defined to be parsed" and a 400.
+#
+# The controller only binds port 7000 if it could build a webhook handler at
+# startup, and building one needs server.secretkey in argocd-secret. On a fresh
+# cluster the controller starts before argocd-server has generated that key,
+# fails once with "server.secretkey is missing", and then runs perfectly
+# happily forever with nothing listening on the port its own Service points at.
+# bootstrap-cluster.sh restarts it after the key exists.
+#
+# Nothing else is routed in. The ArgoCD API — which can deploy anything
+# anywhere — stays unreachable from the internet, and the endpoint verifies
+# GitHub's HMAC signature against a shared secret, so exposing this one path
+# does not make it callable by anyone else.
+#
+# Placeholders are substituted at apply time by scripts/render-argocd.rb.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-webhook
+  namespace: argocd
+  annotations:
+    # A webhook body is small; anything larger is not GitHub.
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+{{- if .Values.tls.enabled }}
+    cert-manager.io/cluster-issuer: {{ .Values.tls.clusterIssuer | quote }}
+{{- end }}
+spec:
+  ingressClassName: nginx
+{{- if .Values.tls.enabled }}
+  tls:
+    - hosts:
+        - "argocd-webhook.{{ .Values.baseHost }}"
+      secretName: argocd-webhook-tls
+{{- end }}
+  rules:
+    - host: "argocd-webhook.{{ .Values.baseHost }}"
+      http:
+        paths:
+          # Exactly this path. Not a prefix — a prefix here would expose the
+          # whole API under /api/.
+          - path: /api/webhook
+            pathType: Exact
+            backend:
+              service:
+                name: argocd-applicationset-controller
+                port:
+                  # Plain HTTP, unlike argocd-server which terminates TLS.
+                  number: 7000
