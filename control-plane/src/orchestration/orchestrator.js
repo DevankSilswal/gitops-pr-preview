@@ -36,6 +36,16 @@
  */
 class ArgoCDOrchestrator {
   /**
+   * How long an environment may legitimately not exist yet.
+   *
+   * The ApplicationSet's pull request generator requeues every 300 seconds, so
+   * anything shorter than that would report a failure for a preview that is
+   * simply waiting its turn. The margin covers a poll that lands just before
+   * the label does.
+   */
+  static GENERATION_GRACE_SECONDS = 420;
+
+  /**
    * @param {object} deps
    * @param {object} deps.github  addLabel/removeLabel, scoped to one repository
    * @param {object} deps.cluster read-only Kubernetes reads
@@ -95,14 +105,24 @@ class ArgoCDOrchestrator {
    * exactly what failed on 2026-08-13, when every pod was Ready and every URL
    * returned 503 because the ingress controller was refusing the annotation.
    */
-  async status({ slug, prNumber }) {
+  async status({ slug, prNumber, ageSeconds = 0 }) {
     const app = this.applicationFor({ slug, prNumber });
     const url = this.urlFor({ slug, prNumber });
 
     const application = await this.cluster.getApplication(app);
     if (!application) {
+      // Absence is the normal state for the first few minutes. The label is the
+      // request; the ApplicationSet notices on its own schedule — a 300s requeue
+      // — and only then does an Application exist. The first live run of this
+      // code called a preview FAILED two seconds after asking for it, because
+      // this branch did not know the difference between 'not yet' and 'not
+      // going to'.
+      if (ageSeconds < ArgoCDOrchestrator.GENERATION_GRACE_SECONDS) {
+        return { serving: false, phase: 'pending', url,
+          detail: 'waiting for the generator to notice the label' };
+      }
       return { serving: false, phase: 'absent', url, failureKind: 'unknown',
-        detail: 'no environment exists for this pull request yet' };
+        detail: `no environment appeared within ${ArgoCDOrchestrator.GENERATION_GRACE_SECONDS}s of the label being added` };
     }
 
     const sync = application.sync;
