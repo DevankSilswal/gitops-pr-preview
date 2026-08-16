@@ -238,6 +238,12 @@ jobs:
       - name: Fail if a second source of truth for the node address appears
         run: ./scripts/check-base-host.sh
 
+      # The control plane's invariants, most of which are refusals: no READY
+      # without evidence, no second preview on a redelivered webhook, no
+      # destruction of a pinned environment, no logs for a viewer.
+      - name: Test the control plane
+        run: node --test --experimental-sqlite control-plane/test/*.test.js
+
       # The JavaScript inside github-script steps is a YAML string, so nothing
       # else checks it; a syntax error would surface minutes into a live run.
       - name: Syntax-check the scripts embedded in workflows

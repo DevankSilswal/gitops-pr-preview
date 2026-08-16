@@ -1,0 +1,11 @@
+{
+  "name": "@stackpreview/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "StackPreview control plane — the product layer above the preview engine",
+  "type": "commonjs",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test --experimental-sqlite test/*.test.js"
+  }
+}
