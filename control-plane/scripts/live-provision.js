@@ -26,8 +26,23 @@ const slo = require('../src/services/slo.js');
 const OWNER = 'DevankSilswal';
 const REPO = 'gitops-pr-preview';
 const SLUG = 'devanksilswal-gitops-pr-preview';
-const BASE_HOST = '20-24-211-179.nip.io';
 const DB_FILE = process.env.CONTROL_PLANE_DB || '/tmp/stackpreview-live.db';
+
+// The base host is not ours to know. scripts/sync-base-host.sh writes it into
+// the platform chart from Terraform's public_ip output, and that file is the
+// single runtime source of truth — a second copy here is precisely what
+// scripts/check-base-host.sh exists to refuse, and it refused this one.
+function baseHostFromChart() {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const values = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'deploy', 'platform-chart', 'values.yaml'), 'utf8');
+  const match = values.match(/^baseHost:\s*(\S+)\s*$/m);
+  if (!match) throw new Error('deploy/platform-chart/values.yaml has no baseHost');
+  return match[1];
+}
+
+const BASE_HOST = baseHostFromChart();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const iso = () => new Date().toISOString();
