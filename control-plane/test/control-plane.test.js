@@ -291,3 +291,93 @@ test('a repository belongs to exactly one project', () => {
     projectId: other.id, owner: 'acme', name: 'pixel-battle', imageRepository: 'ghcr.io/acme/x',
   }), /UNIQUE/);
 });
+
+// ------------------------------------------------- found by the first live run
+
+test('an environment that has not appeared yet is not a failure', async () => {
+  const { ArgoCDOrchestrator } = require('../src/orchestration/orchestrator.js');
+  // A cluster with no Application for this preview, which is what the first few
+  // minutes look like: the label is the request and the generator requeues on
+  // its own schedule.
+  const orchestrator = new ArgoCDOrchestrator({
+    github: {}, probe: async () => 0, baseHost: 'test.nip.io',
+    cluster: { getApplication: async () => null, podFailures: async () => [] },
+  });
+
+  const early = await orchestrator.status({ slug: 's', prNumber: 1, ageSeconds: 5 });
+  assert.strictEqual(early.phase, 'pending');
+  assert.strictEqual(early.failureKind, undefined,
+    'a preview two seconds old was reported as failed — the first live run did exactly this');
+
+  const late = await orchestrator.status({ slug: 's', prNumber: 1, ageSeconds: 600 });
+  assert.strictEqual(late.phase, 'absent');
+  assert.strictEqual(late.failureKind, 'unknown');
+  assert.ok(ArgoCDOrchestrator.GENERATION_GRACE_SECONDS > 300,
+    'the grace window must exceed the generator requeue interval');
+});
+
+test('a preview that never comes up does not stay READY', async () => {
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR());
+  const preview = f.store.findPreview(f.repo.id, 24);
+  f.orchestrator.markServing({ owner: 'acme', repo: 'pixel-battle', prNumber: 24 });
+  assert.strictEqual((await f.previews.reconcile(preview.id)).status, 'READY');
+
+  // The environment stops answering.
+  f.orchestrator.serving.clear();
+  const after = await f.previews.reconcile(preview.id);
+  assert.notStrictEqual(after.status, 'READY',
+    'the product kept claiming READY after the environment stopped serving');
+});
+
+// --------------------------------------------------------------------- the SLO
+
+test('the SLO refuses the samples that made the old metric useless', () => {
+  const slo = require('../src/services/slo.js');
+  const base = { status: 'succeeded', started_at: '2026-08-16T00:00:00Z', trigger: 'open' };
+  const rows = [
+    { ...base, id: 'a', provisioning_seconds: 94, finished_at: '2026-08-16T00:01:34Z' },
+    { ...base, id: 'b', provisioning_seconds: 415673, finished_at: '2026-08-20T19:27:53Z' },  // the commit-timestamp bug
+    { ...base, id: 'c', provisioning_seconds: -5, finished_at: '2026-08-16T00:00:00Z' },
+    { ...base, id: 'd', provisioning_seconds: 0, finished_at: '2026-08-16T00:00:00Z' },
+    { ...base, id: 'e', provisioning_seconds: null, finished_at: '2026-08-16T00:01:00Z' },
+    { ...base, id: 'f', provisioning_seconds: 60, finished_at: '2026-08-16T00:05:00Z' },      // disagrees with its own timestamps
+    { ...base, id: 'g', status: 'failed', provisioning_seconds: null, finished_at: '2026-08-16T00:01:00Z' },
+  ];
+  const r = slo.report(rows);
+  assert.strictEqual(r.valid, 1, 'only one of these is a real measurement');
+  assert.strictEqual(r.byKind.first_provision.p50, 94);
+  assert.match(r.rejections.find((x) => x.id === 'b').why, /implausible/);
+  assert.match(r.rejections.find((x) => x.id === 'f').why, /disagrees with its own timestamps/);
+  assert.strictEqual(r.objective, null, 'an objective must not be invented from one sample');
+  assert.match(r.byKind.first_provision.attainment, /withheld/);
+});
+
+test('the SLO separates a first provision from a redeploy and a recovery', () => {
+  const slo = require('../src/services/slo.js');
+  const at = (s) => ({ status: 'succeeded', started_at: '2026-08-16T00:00:00Z',
+    finished_at: new Date(Date.parse('2026-08-16T00:00:00Z') + s * 1000).toISOString(), provisioning_seconds: s });
+  const r = slo.report([
+    { ...at(100), id: '1', trigger: 'open' },
+    { ...at(40), id: '2', trigger: 'synchronize' },
+    { ...at(50), id: '3', trigger: 'redeploy' },
+    { ...at(70), id: '4', trigger: 'rollback' },
+  ]);
+  assert.strictEqual(r.byKind.first_provision.samples, 1);
+  assert.strictEqual(r.byKind.redeploy.samples, 2);
+  assert.strictEqual(r.byKind.recovery.samples, 1);
+  assert.strictEqual(r.firstProvisions, 1);
+});
+
+test('a redeploy is legal from every state a user can see', () => {
+  // Found live: redeploy assumed it always started from rest, and threw when a
+  // user asked for one while the environment was already updating.
+  for (const from of ['READY', 'UPDATING', 'PROVISIONING', 'FAILED']) {
+    assert.ok(state.canTransition(from, 'BUILDING'), `redeploy refused from ${from}`);
+  }
+  assert.ok(!state.canTransition('DESTROYED', 'BUILDING'), 'a destroyed preview is not redeployable');
+});
+
+test('a redeploy asked for while one is running is idempotent, not illegal', () => {
+  assert.ok(state.canTransition('BUILDING', 'BUILDING'));
+});

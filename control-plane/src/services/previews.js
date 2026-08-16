@@ -156,8 +156,14 @@ class PreviewService {
     const repository = this.store.getRepository(preview.repository_id);
     const { project } = this.#context(repository);
 
+    // How long this attempt has been running. The orchestrator needs it to tell
+    // 'the generator has not noticed yet' from 'nothing is ever going to appear'.
+    const attempt = this.store.currentDeployment(previewId);
+    const startedAt = attempt ? attempt.started_at : preview.created_at;
+    const ageSeconds = Math.max(0, Math.round((Date.now() - Date.parse(startedAt)) / 1000));
+
     const observed = await this.orchestrator.status({ slug: project.slug, prNumber: preview.pr_number,
-      owner: repository.owner, repo: repository.name });
+      owner: repository.owner, repo: repository.name, ageSeconds });
 
     if (observed.serving) {
       if (preview.status === state.STATES.READY) {
@@ -194,6 +200,15 @@ class PreviewService {
         return this.#transition(preview, state.STATES.FAILED, message);
       }
       return this.store.updatePreviewStatus(previewId, { status: state.STATES.FAILED, reason: message });
+    }
+
+    // Not serving, and no diagnosable failure. If the preview was READY, it is
+    // not any more — saying so is the whole promise. A blip and a real outage
+    // are indistinguishable from here, so the honest state is "not ready, and
+    // being watched" rather than a guess about which one it is.
+    if (preview.status === state.STATES.READY) {
+      return this.#transition(preview, state.STATES.PROVISIONING,
+        'The environment stopped answering and is being watched');
     }
 
     // Still coming up. Recording the observation time is the point: the UI can

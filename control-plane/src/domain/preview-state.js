@@ -27,11 +27,23 @@ const STATES = Object.freeze({
 // will eventually report READY for an environment that never came up.
 const TRANSITIONS = Object.freeze({
   QUEUED:       ['BUILDING', 'REJECTED', 'FAILED', 'DESTROYING'],
-  BUILDING:     ['PROVISIONING', 'FAILED', 'DESTROYING'],
-  PROVISIONING: ['READY', 'FAILED', 'DESTROYING'],
-  READY:        ['UPDATING', 'EXPIRING', 'DESTROYING', 'FAILED'],
-  UPDATING:     ['READY', 'FAILED', 'DESTROYING'],
-  FAILED:       ['BUILDING', 'EXPIRING', 'DESTROYING'],
+  // BUILDING -> BUILDING is a redeploy asked for while one is already running:
+  // legitimate, idempotent, and refused by the first version of this table.
+  BUILDING:     ['BUILDING', 'PROVISIONING', 'FAILED', 'DESTROYING'],
+  // BUILDING appears in every live state's list because a redeploy is a new
+  // attempt, and a user may ask for one whenever they can see the environment.
+  // The first live run hit this from UPDATING: the state machine was right to
+  // refuse, and redeploy was wrong to assume it always started from rest.
+  PROVISIONING: ['READY', 'BUILDING', 'FAILED', 'DESTROYING'],
+  // READY -> PROVISIONING is the honest description of an environment that has
+  // stopped answering: it is no longer ready, and it may or may not come back.
+  // Without it, a preview observed not serving stayed READY, which is the one
+  // thing this state machine exists to prevent.
+  READY:        ['UPDATING', 'BUILDING', 'PROVISIONING', 'EXPIRING', 'DESTROYING', 'FAILED'],
+  UPDATING:     ['READY', 'BUILDING', 'PROVISIONING', 'FAILED', 'DESTROYING'],
+  // ...and PROVISIONING is also the way back from a failure, so recovery has a
+  // legal route that still has to pass through the evidence check.
+  FAILED:       ['BUILDING', 'PROVISIONING', 'EXPIRING', 'DESTROYING'],
   REJECTED:     ['QUEUED', 'DESTROYING'],
   EXPIRING:     ['DESTROYING', 'READY'],
   DESTROYING:   ['DESTROYED'],
