@@ -1,0 +1,83 @@
+name: control-plane-image
+
+# Builds the control plane image the platform chart deploys.
+#
+# Separate from build.yml because it has a different lifecycle: the preview app
+# is built per pull request and tagged with a head SHA, while this is built from
+# main and tagged with one, because the chart pins a tag rather than following a
+# branch. `main` is also published so a first install has something to pull.
+#
+# Nothing here deploys. The chart has controlPlane.enabled: false, and turning
+# it on is a separate, deliberate change — see docs/product/github-app-setup.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'control-plane/**'
+      - '.github/workflows/control-plane-image.yml'
+  pull_request:
+    paths:
+      - 'control-plane/**'
+  workflow_dispatch:
+
+concurrency:
+  group: control-plane-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository_owner }}/stackpreview-control-plane
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # The image has no dependencies to install, so the tests are the only
+      # thing standing between a broken control plane and a published tag.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Test before publishing anything
+        run: node --test --experimental-sqlite control-plane/test/*.test.js
+
+      # A pull request builds to prove the Dockerfile still works and pushes
+      # nothing: a fork's build must never be able to publish an image this
+      # cluster would then run.
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+      - name: Log in to the registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build${{ github.event_name != 'pull_request' && ' and push' || '' }}
+        uses: docker/build-push-action@2634353844668a0eea9ee2b17be13f5f9cf50d1c # v6
+        with:
+          context: control-plane
+          push: ${{ github.event_name != 'pull_request' }}
+          # The node runs amd64; arm64 is here so the image can be pulled on a
+          # laptop for local work without a second build.
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.IMAGE }}:main
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Say which tag the chart should pin
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "### control plane image" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ env.IMAGE }}:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin this in deploy/platform-chart/values.yaml under controlPlane.image.tag." >> "$GITHUB_STEP_SUMMARY"
