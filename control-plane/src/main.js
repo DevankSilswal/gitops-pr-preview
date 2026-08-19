@@ -9,6 +9,7 @@ const { PreviewService, AuditService } = require('./services/previews.js');
 const { ArgoCDOrchestrator } = require('./orchestration/orchestrator.js');
 const { KubectlCluster, probe } = require('./orchestration/cluster.js');
 const { GitHubAppClient } = require('./github/app-auth.js');
+const { GitHubTokenClient } = require('./github/token-client.js');
 
 const log = (level, message, extra = {}) =>
   console.log(JSON.stringify({ level, message, ...extra, at: new Date().toISOString() }));
@@ -33,7 +34,13 @@ function main() {
   log('info', 'migrations', { applied: applied.length ? applied : 'already current' });
   const store = st.createStore(db);
 
-  const app = new GitHubAppClient({ appId: cfg.github.appId, privateKey: cfg.github.privateKey });
+  // One of two clients, same interface. Everything downstream — the
+  // orchestrator, the services, the API — is written against the interface and
+  // does not know which one it got, so moving to the App later is a Secret and
+  // an environment variable rather than a change to any of it.
+  const app = cfg.github.authMode === 'token'
+    ? new GitHubTokenClient({ token: cfg.github.token })
+    : new GitHubAppClient({ appId: cfg.github.appId, privateKey: cfg.github.privateKey });
   const cluster = new KubectlCluster();
 
   // One orchestrator per installation: the token is installation-scoped, which
