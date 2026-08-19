@@ -72,7 +72,7 @@ controlPlane:
     repository: ghcr.io/devanksilswal/stackpreview-control-plane
     # Pinned to a commit rather than following main: the cluster should change
     # when somebody decides it does, not when a workflow finishes.
-    tag: "88029654d7c22e2cbf862638e07109f4052dad9d"
+    tag: "aea3777dcb3b21fe84d511b295876f59785be639"
   # Created by hand, never by this chart and never in git:
   #   kubectl create secret generic stackpreview-github-app -n stackpreview \
   #     --from-literal=app-id=... \
