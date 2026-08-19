@@ -142,6 +142,9 @@ spec:
             # Secrets are referenced, never rendered. The Secret named here is
             # created by hand — see docs/product/github-app-setup.md — and is
             # not in git, not in this chart, and not in any values file.
+            - name: GITHUB_AUTH
+              value: {{ .Values.controlPlane.githubAuth | quote }}
+            {{- if eq .Values.controlPlane.githubAuth "app" }}
             - name: GITHUB_APP_ID
               valueFrom:
                 secretKeyRef:
@@ -149,6 +152,16 @@ spec:
                   key: app-id
             - name: GITHUB_APP_PRIVATE_KEY_FILE
               value: /secrets/private-key.pem
+            {{- else }}
+            # A personal access token instead of an App: long-lived and
+            # account-scoped, which the process prints as a byte count and
+            # nothing else. See ADR 0015 for why this posture exists.
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controlPlane.secretName }}
+                  key: token
+            {{- end }}
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
@@ -157,9 +170,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            {{- if eq .Values.controlPlane.githubAuth "app" }}
+            # Only app mode has a key to mount. In token mode the Secret has no
+            # private-key.pem and mounting it would fail the pod outright.
             - name: github-app
               mountPath: /secrets
               readOnly: true
+            {{- end }}
           # The process is the only writer; everything else is read-only so a
           # compromised dependency cannot leave anything behind.
           securityContext:
@@ -190,13 +207,17 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: stackpreview-data
+        {{- if eq .Values.controlPlane.githubAuth "app" }}
         - name: github-app
           secret:
             secretName: {{ .Values.controlPlane.secretName }}
             items:
               - key: private-key.pem
                 path: private-key.pem
+            # A file rather than an environment variable: env vars end up in
+            # crash dumps and kubectl describe output.
             defaultMode: 0400
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
