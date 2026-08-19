@@ -14,6 +14,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const https = require('node:https');
 
 const SA = '/var/run/secrets/kubernetes.io/serviceaccount';
 
@@ -24,10 +25,12 @@ class InClusterKubernetes {
     this.host = process.env.KUBERNETES_SERVICE_HOST;
     this.port = process.env.KUBERNETES_SERVICE_PORT || '443';
     this.token = fs.readFileSync(`${SA}/token`, 'utf8').trim();
-    // Node needs the cluster CA to trust the API server. Passing it explicitly
-    // is the difference between verifying the connection and disabling
-    // verification, and there is no version of this where disabling it is the
-    // right answer.
+    // The cluster CA, and it has to be handed to the request. The first
+    // version of this file read it into a field and then called fetch, with a
+    // comment asserting Node would honour it — Node does not: its fetch is
+    // undici and takes no ca option, so every call failed with the wonderfully
+    // uninformative 'fetch failed'. node:https takes the CA directly, which is
+    // the difference between verifying the connection and not making it.
     this.ca = fs.readFileSync(`${SA}/ca.crt`);
   }
 
@@ -35,45 +38,45 @@ class InClusterKubernetes {
     return Boolean(process.env.KUBERNETES_SERVICE_HOST) && fs.existsSync(`${SA}/token`);
   }
 
-  async #get(path) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      const res = await fetch(`https://${this.host}:${this.port}${path}`, {
-        headers: { authorization: `Bearer ${this.token}`, accept: 'application/json' },
-        signal: controller.signal,
-        // Node 22+ honours this via undici; the CA is the SA's own.
-        dispatcher: undefined,
+  #request(method, path, body) {
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        host: this.host, port: this.port, path, method,
+        ca: this.ca,
+        timeout: this.timeoutMs,
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          accept: 'application/json',
+          ...(body ? { 'content-type': 'application/merge-patch+json' } : {}),
+        },
+      }, (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { text += c; });
+        res.on('end', () => {
+          if (res.statusCode === 404) return resolve(null);
+          if (res.statusCode >= 400) {
+            // A cluster that cannot be reached is not an empty cluster. Rejecting
+            // means the caller records UNKNOWN rather than concluding that every
+            // environment disappeared.
+            const err = new Error(`kubernetes ${method} ${path} → ${res.statusCode}: ${text.slice(0, 160)}`);
+            err.status = res.statusCode;
+            return reject(err);
+          }
+          try { resolve(text ? JSON.parse(text) : null); }
+          catch (err) { reject(new Error(`kubernetes ${method} ${path}: unparseable response`)); }
+        });
       });
-      if (res.status === 404) return null;
-      const text = await res.text();
-      if (!res.ok) {
-        // A cluster that cannot be reached is not an empty cluster. Throwing
-        // means the caller records UNKNOWN rather than concluding that every
-        // environment disappeared.
-        const err = new Error(`kubernetes GET ${path} → ${res.status}: ${text.slice(0, 160)}`);
-        err.status = res.status;
-        throw err;
-      }
-      return text ? JSON.parse(text) : null;
-    } finally {
-      clearTimeout(timer);
-    }
+      req.on('timeout', () => req.destroy(new Error(`kubernetes ${method} ${path}: timed out after ${this.timeoutMs}ms`)));
+      req.on('error', reject);
+      if (body) req.write(JSON.stringify(body));
+      req.end();
+    });
   }
 
-  async #patch(path, body) {
-    const res = await fetch(`https://${this.host}:${this.port}${path}`, {
-      method: 'PATCH',
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        'content-type': 'application/merge-patch+json',
-        accept: 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`kubernetes PATCH ${path} → ${res.status}`);
-    return res.json();
-  }
+  async #get(path) { return this.#request('GET', path); }
+
+  async #patch(path, body) { return this.#request('PATCH', path, body); }
 
   async getApplication(name) {
     const app = await this.#get(`/apis/argoproj.io/v1alpha1/namespaces/${this.argocdNamespace}/applications/${name}`);
@@ -119,11 +122,22 @@ class InClusterKubernetes {
     const pods = await this.#get(`/api/v1/namespaces/${namespace}/pods?labelSelector=app.kubernetes.io/name%3Dpreview-app`);
     const pod = (pods?.items ?? [])[0];
     if (!pod) return ['no pod is running for this environment'];
-    const res = await fetch(
-      `https://${this.host}:${this.port}/api/v1/namespaces/${namespace}/pods/${pod.metadata.name}/log?tailLines=${tailLines}`,
-      { headers: { authorization: `Bearer ${this.token}` } });
-    if (!res.ok) return [`logs unavailable: ${res.status}`];
-    return (await res.text()).split('\n');
+    // Logs are text, not JSON, so this cannot go through #request.
+    return new Promise((resolve) => {
+      const req = https.request({
+        host: this.host, port: this.port, ca: this.ca, timeout: this.timeoutMs,
+        path: `/api/v1/namespaces/${namespace}/pods/${pod.metadata.name}/log?tailLines=${tailLines}`,
+        headers: { authorization: `Bearer ${this.token}` },
+      }, (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { text += c; });
+        res.on('end', () => resolve(res.statusCode >= 400 ? [`logs unavailable: ${res.statusCode}`] : text.split('\n')));
+      });
+      req.on('error', (e) => resolve([`logs unavailable: ${e.message}`]));
+      req.on('timeout', () => { req.destroy(); resolve(['logs unavailable: timed out']); });
+      req.end();
+    });
   }
 
   async setApplicationImageTag(application, imageTag) {

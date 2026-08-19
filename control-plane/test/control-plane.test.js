@@ -537,3 +537,16 @@ test('the in-cluster adapter knows whether it is in a cluster', () => {
     'outside a cluster it must decline, so main falls back to kubectl');
   if (saved) process.env.KUBERNETES_SERVICE_HOST = saved;
 });
+
+test('the in-cluster adapter passes the cluster CA rather than trusting fetch to', () => {
+  // The first version read the CA into a field and then called fetch, whose
+  // undici implementation takes no ca option. Every call failed with "fetch
+  // failed" and the reconciler retried forever. This asserts the shape of the
+  // fix, since the behaviour itself needs a cluster.
+  const source = require('node:fs').readFileSync(
+    `${__dirname}/../src/orchestration/in-cluster.js`, 'utf8');
+  assert.ok(source.includes("require('node:https')"), 'must use node:https, which accepts a CA');
+  assert.ok(!/\bfetch\(/.test(source), 'a fetch call cannot be given the cluster CA');
+  assert.ok(/ca: this\.ca/.test(source), 'the CA must be handed to the request, not merely read');
+  assert.ok(!/rejectUnauthorized:\s*false/.test(source), 'verification must never be disabled');
+});
