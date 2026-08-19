@@ -57,7 +57,7 @@ driftCheck:
 # on before the GitHub App's webhook secret exists — the process refuses to
 # start in that combination.
 controlPlane:
-  enabled: false
+  enabled: true
   namespace: stackpreview
   storage: 1Gi
   maxEnvironments: 8
@@ -70,12 +70,20 @@ controlPlane:
   ingressNamespace: ingress-nginx
   image:
     repository: ghcr.io/devanksilswal/stackpreview-control-plane
-    tag: main
+    # Pinned to a commit rather than following main: the cluster should change
+    # when somebody decides it does, not when a workflow finishes.
+    tag: "88029654d7c22e2cbf862638e07109f4052dad9d"
   # Created by hand, never by this chart and never in git:
   #   kubectl create secret generic stackpreview-github-app -n stackpreview \
   #     --from-literal=app-id=... \
   #     --from-literal=webhook-secret=... \
   #     --from-file=private-key.pem=...
+  # Which credential the control plane uses. See ADR 0015.
+  #   app    installation tokens, an hour long, scoped to the installed
+  #          repositories. What this should eventually run as.
+  #   token  a personal access token: long-lived and account-scoped. The only
+  #          posture that can be set up without a browser.
+  githubAuth: token
   secretName: stackpreview-github-app
   ingress:
     enabled: false
