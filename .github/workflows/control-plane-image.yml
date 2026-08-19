@@ -27,7 +27,6 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/${{ github.repository_owner }}/stackpreview-control-plane
 
 jobs:
   build:
@@ -38,6 +37,16 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # GitHub usernames are frequently mixed case and OCI repository names
+      # must be lowercase; Actions expressions have no lower(). The same tr is
+      # in preview-build.yml for the same reason — the first version of this
+      # workflow used the raw owner and buildx refused the tag outright.
+      - name: Work out the image name
+        id: image
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "name=${REGISTRY}/${OWNER_LC}/stackpreview-control-plane" >> "$GITHUB_OUTPUT"
 
       # The image has no dependencies to install, so the tests are the only
       # thing standing between a broken control plane and a published tag.
@@ -68,8 +77,8 @@ jobs:
           # laptop for local work without a second build.
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.IMAGE }}:main
-            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:main
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -78,6 +87,6 @@ jobs:
         run: |
           echo "### control plane image" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ env.IMAGE }}:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.image.outputs.name }}:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "Pin this in deploy/platform-chart/values.yaml under controlPlane.image.tag." >> "$GITHUB_STEP_SUMMARY"
