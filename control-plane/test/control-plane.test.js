@@ -381,3 +381,61 @@ test('a redeploy is legal from every state a user can see', () => {
 test('a redeploy asked for while one is running is idempotent, not illegal', () => {
   assert.ok(state.canTransition('BUILDING', 'BUILDING'));
 });
+
+// ---------------------------------------------------------- deployment config
+
+test('the control plane refuses to start without the secrets it needs', () => {
+  const { load, ConfigError } = require('../src/config.js');
+  assert.throws(() => load({ PREVIEW_BASE_HOST: 'x.nip.io' }), ConfigError);
+  try {
+    load({ PREVIEW_BASE_HOST: 'x.nip.io' });
+  } catch (err) {
+    assert.match(err.message, /GITHUB_APP_ID/);
+    assert.match(err.message, /GITHUB_WEBHOOK_SECRET/);
+  }
+});
+
+test('it refuses to be exposed publicly without a webhook secret', () => {
+  const { load, ConfigError } = require('../src/config.js');
+  assert.throws(() => load({
+    PREVIEW_BASE_HOST: 'x.nip.io', GITHUB_APP_ID: '1', GITHUB_APP_PRIVATE_KEY: 'k',
+    EXPOSE_PUBLICLY: 'true',
+  }), (err) => err instanceof ConfigError && /unauthenticated endpoint on the internet/.test(err.message));
+});
+
+test('private previews default to unavailable, which is the safe answer', () => {
+  const { load } = require('../src/config.js');
+  const cfg = load({ PREVIEW_BASE_HOST: 'x.nip.io', GITHUB_APP_ID: '1',
+    GITHUB_APP_PRIVATE_KEY: 'k', GITHUB_WEBHOOK_SECRET: 's' });
+  assert.strictEqual(cfg.platformLimits.privatePreviewsAvailable, false);
+  assert.strictEqual(cfg.exposePublicly, false);
+});
+
+test('redaction never prints a secret', () => {
+  const { load, redact } = require('../src/config.js');
+  const cfg = load({ PREVIEW_BASE_HOST: 'x.nip.io', GITHUB_APP_ID: '42',
+    GITHUB_APP_PRIVATE_KEY: 'SUPER-SECRET-KEY-MATERIAL', GITHUB_WEBHOOK_SECRET: 'SUPER-SECRET-HMAC' });
+  const printed = JSON.stringify(redact(cfg));
+  assert.ok(!printed.includes('SUPER-SECRET-KEY-MATERIAL'));
+  assert.ok(!printed.includes('SUPER-SECRET-HMAC'));
+  assert.match(printed, /\[set\]/);
+  assert.match(printed, /bytes/);
+});
+
+test('the App JWT is signed, short-lived, and backdated against clock skew', () => {
+  const crypto = require('node:crypto');
+  const { appJwt } = require('../src/github/app-auth.js');
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pem = privateKey.export({ type: 'pkcs1', format: 'pem' });
+
+  const now = 1_800_000_000;
+  const token = appJwt({ appId: 42, privateKey: pem, now });
+  const [h, p, sig] = token.split('.');
+  const payload = JSON.parse(Buffer.from(p, 'base64url'));
+
+  assert.strictEqual(payload.iss, '42');
+  assert.strictEqual(payload.iat, now - 60, 'iat must be backdated; GitHub rejects a future iat outright');
+  assert.ok(payload.exp - payload.iat <= 10 * 60, 'GitHub caps App JWT lifetime at ten minutes');
+  assert.ok(crypto.verify('RSA-SHA256', Buffer.from(`${h}.${p}`), publicKey, Buffer.from(sig, 'base64url')),
+    'the JWT signature does not verify');
+});

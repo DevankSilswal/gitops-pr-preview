@@ -1,0 +1,284 @@
+{{- if .Values.controlPlane.enabled }}
+# The StackPreview control plane.
+#
+# Deliberately off by default. Enabling it is a production change with a real
+# blast radius — a new workload on a node already at 73% memory, and, if the
+# Ingress below is also enabled, an endpoint on the internet that can create
+# environments. Both should be somebody's decision rather than a side effect of
+# a merge.
+#
+# It is a single replica with a Recreate strategy, and that is not laziness.
+# The database is SQLite on a ReadWriteOnce volume: two pods would be two
+# writers on one file, and a RollingUpdate briefly runs two pods by design.
+# Recreate means a restart has a few seconds of downtime, which is the correct
+# trade for a control plane whose unavailability delays a preview rather than
+# taking one down.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.controlPlane.namespace }}
+  labels:
+    # Same admission posture as every preview namespace. The control plane runs
+    # no less restricted than the code it supervises.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stackpreview-control-plane
+  namespace: {{ .Values.controlPlane.namespace }}
+---
+# Read the engine, and make exactly one kind of change to it.
+#
+# The product's lifecycle verbs are GitHub labels, so this needs no permission
+# to create namespaces, Deployments or Applications. The single write is
+# patching an Application's image tag, which is what a rollback is.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stackpreview-control-plane
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["patch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applicationsets", "appprojects"]
+    verbs: ["get", "list"]
+  # Diagnosis: why a preview is not serving, and what it printed.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "resourcequotas"]
+    verbs: ["get", "list"]
+  # Deliberately absent: secrets, at any scope. The control plane has no reason
+  # to read one, and the drift checker's PartialObjectMetadata trick is not
+  # available to something that would then hold the values in memory.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stackpreview-control-plane
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: stackpreview-control-plane
+subjects:
+  - kind: ServiceAccount
+    name: stackpreview-control-plane
+    namespace: {{ .Values.controlPlane.namespace }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: stackpreview-data
+  namespace: {{ .Values.controlPlane.namespace }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.controlPlane.storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackpreview-control-plane
+  namespace: {{ .Values.controlPlane.namespace }}
+spec:
+  replicas: 1
+  strategy:
+    # See the note at the top: one SQLite writer, always.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stackpreview-control-plane
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stackpreview-control-plane
+      annotations:
+        # A change to the secret does not otherwise restart the pod, and a
+        # rotated webhook secret that the running process never reads is an
+        # outage that looks like a GitHub problem.
+        checksum/secret-name: {{ .Values.controlPlane.secretName | quote }}
+    spec:
+      serviceAccountName: stackpreview-control-plane
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: control-plane
+          image: "{{ .Values.controlPlane.image.repository }}:{{ .Values.controlPlane.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DATABASE_FILE
+              value: /data/stackpreview.db
+            - name: PREVIEW_BASE_HOST
+              # The generated value, from the same chart values Terraform feeds.
+              # Not a second copy: this template reads the single source.
+              value: {{ .Values.baseHost | quote }}
+            - name: MAX_ENVIRONMENTS
+              value: {{ .Values.controlPlane.maxEnvironments | quote }}
+            - name: PRIVATE_PREVIEWS_AVAILABLE
+              # False until the cluster has a preview secret salt. The product
+              # downgrades a private preview to public and says so, rather than
+              # letting a reviewer believe unreleased work is protected.
+              value: {{ .Values.controlPlane.privatePreviewsAvailable | quote }}
+            - name: EXPOSE_PUBLICLY
+              value: {{ .Values.controlPlane.ingress.enabled | quote }}
+            # Secrets are referenced, never rendered. The Secret named here is
+            # created by hand — see docs/product/github-app-setup.md — and is
+            # not in git, not in this chart, and not in any values file.
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controlPlane.secretName }}
+                  key: app-id
+            - name: GITHUB_APP_PRIVATE_KEY_FILE
+              value: /secrets/private-key.pem
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controlPlane.secretName }}
+                  key: webhook-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: github-app
+              mountPath: /secrets
+              readOnly: true
+          # The process is the only writer; everything else is read-only so a
+          # compromised dependency cannot leave anything behind.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            # Generous: a liveness probe that kills a process mid-migration is
+            # how a database ends up half-migrated on every restart.
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              # Measured at roughly 100Mi with SQLite in-process. The ceiling is
+              # deliberate on a node with about a gigabyte spare.
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: stackpreview-data
+        - name: github-app
+          secret:
+            secretName: {{ .Values.controlPlane.secretName }}
+            items:
+              - key: private-key.pem
+                path: private-key.pem
+            defaultMode: 0400
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackpreview-control-plane
+  namespace: {{ .Values.controlPlane.namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: stackpreview-control-plane
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# Nothing may reach the control plane except the ingress controller, and the
+# control plane may reach only what it needs: the Kubernetes API, GitHub, and
+# DNS. Without this, a workload in any namespace could call the API that creates
+# environments.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stackpreview-control-plane
+  namespace: {{ .Values.controlPlane.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: stackpreview-control-plane
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.controlPlane.ingressNamespace }}
+      ports:
+        - port: 8080
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - ports:
+        - port: 443
+          protocol: TCP
+    # The Kubernetes API, which on k3s answers on the node's own address.
+    - ports:
+        - port: 6443
+          protocol: TCP
+{{- if .Values.controlPlane.ingress.enabled }}
+---
+# Only rendered when the control plane is deliberately exposed.
+#
+# The endpoint accepts GitHub webhooks, and its only authentication is the HMAC
+# signature — so this must not exist before GITHUB_WEBHOOK_SECRET does. The
+# config module refuses to start in that combination, and this comment is here
+# because a template is easier to enable carelessly than a process is to start
+# carelessly.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stackpreview-control-plane
+  namespace: {{ .Values.controlPlane.namespace }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.tls.clusterIssuer | quote }}
+    # A webhook body is small; a large one is somebody probing.
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - "{{ .Values.controlPlane.ingress.subdomain }}.{{ .Values.baseHost }}"
+      secretName: stackpreview-control-plane-tls
+  rules:
+    - host: "{{ .Values.controlPlane.ingress.subdomain }}.{{ .Values.baseHost }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stackpreview-control-plane
+                port:
+                  name: http
+{{- end }}
+{{- end }}

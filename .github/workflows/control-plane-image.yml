@@ -1,0 +1,92 @@
+name: control-plane-image
+
+# Builds the control plane image the platform chart deploys.
+#
+# Separate from build.yml because it has a different lifecycle: the preview app
+# is built per pull request and tagged with a head SHA, while this is built from
+# main and tagged with one, because the chart pins a tag rather than following a
+# branch. `main` is also published so a first install has something to pull.
+#
+# Nothing here deploys. The chart has controlPlane.enabled: false, and turning
+# it on is a separate, deliberate change — see docs/product/github-app-setup.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'control-plane/**'
+      - '.github/workflows/control-plane-image.yml'
+  pull_request:
+    paths:
+      - 'control-plane/**'
+  workflow_dispatch:
+
+concurrency:
+  group: control-plane-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # GitHub usernames are frequently mixed case and OCI repository names
+      # must be lowercase; Actions expressions have no lower(). The same tr is
+      # in preview-build.yml for the same reason — the first version of this
+      # workflow used the raw owner and buildx refused the tag outright.
+      - name: Work out the image name
+        id: image
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "name=${REGISTRY}/${OWNER_LC}/stackpreview-control-plane" >> "$GITHUB_OUTPUT"
+
+      # The image has no dependencies to install, so the tests are the only
+      # thing standing between a broken control plane and a published tag.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Test before publishing anything
+        run: node --test --experimental-sqlite control-plane/test/*.test.js
+
+      # A pull request builds to prove the Dockerfile still works and pushes
+      # nothing: a fork's build must never be able to publish an image this
+      # cluster would then run.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to the registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build${{ github.event_name != 'pull_request' && ' and push' || '' }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: control-plane
+          push: ${{ github.event_name != 'pull_request' }}
+          # The node runs amd64; arm64 is here so the image can be pulled on a
+          # laptop for local work without a second build.
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.image.outputs.name }}:main
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Say which tag the chart should pin
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "### control plane image" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.image.outputs.name }}:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin this in deploy/platform-chart/values.yaml under controlPlane.image.tag." >> "$GITHUB_STEP_SUMMARY"

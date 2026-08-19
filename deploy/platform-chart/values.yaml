@@ -48,3 +48,35 @@ driftCheck:
   # is what keeps the chart from asking for anything outside it.
   requiredResponseHeaders:
     - X-Robots-Tag
+
+# The StackPreview control plane.
+#
+# Off by default, and enabling it is two decisions rather than one. `enabled`
+# puts a new workload on a node already at 73% memory; `ingress.enabled` puts an
+# endpoint that can create environments on the internet, and must not be turned
+# on before the GitHub App's webhook secret exists — the process refuses to
+# start in that combination.
+controlPlane:
+  enabled: false
+  namespace: stackpreview
+  storage: 1Gi
+  maxEnvironments: 8
+  # Stays false until the cluster has a preview secret salt. With it false the
+  # product downgrades a private preview to public and says why, rather than
+  # letting a reviewer believe unreleased work is protected.
+  privatePreviewsAvailable: false
+  # Namespace the ingress controller runs in; the only source allowed to reach
+  # the control plane.
+  ingressNamespace: ingress-nginx
+  image:
+    repository: ghcr.io/devanksilswal/stackpreview-control-plane
+    tag: main
+  # Created by hand, never by this chart and never in git:
+  #   kubectl create secret generic stackpreview-github-app -n stackpreview \
+  #     --from-literal=app-id=... \
+  #     --from-literal=webhook-secret=... \
+  #     --from-file=private-key.pem=...
+  secretName: stackpreview-github-app
+  ingress:
+    enabled: false
+    subdomain: stackpreview
