@@ -439,3 +439,44 @@ test('the App JWT is signed, short-lived, and backdated against clock skew', () 
   assert.ok(crypto.verify('RSA-SHA256', Buffer.from(`${h}.${p}`), publicKey, Buffer.from(sig, 'base64url')),
     'the JWT signature does not verify');
 });
+
+// --------------------------------------------------- the two ways to reach GitHub
+
+test('each auth mode demands its own credentials and neither accepts the other', () => {
+  const { load, redact, ConfigError } = require('../src/config.js');
+  const base = { PREVIEW_BASE_HOST: 'x.nip.io', GITHUB_WEBHOOK_SECRET: 'a'.repeat(20) };
+
+  assert.throws(() => load({ ...base, GITHUB_AUTH: 'token' }), /GITHUB_TOKEN is not set/);
+  assert.throws(() => load({ ...base, GITHUB_AUTH: 'app' }), /GITHUB_APP_ID is not set/);
+  assert.throws(() => load({ ...base, GITHUB_AUTH: 'sudo' }), /must be 'app' or 'token'/);
+
+  // A token does not satisfy app mode, and app credentials do not satisfy token
+  // mode — the mode says which posture is in force, so it cannot be inferred.
+  assert.throws(() => load({ ...base, GITHUB_AUTH: 'app', GITHUB_TOKEN: 'ghp_x' }), ConfigError);
+
+  const ok = load({ ...base, GITHUB_AUTH: 'token', GITHUB_TOKEN: 'ghp_secret_value' });
+  assert.strictEqual(ok.github.authMode, 'token');
+});
+
+test('the webhook secret is required in both modes, because it is the only authentication the endpoint has', () => {
+  const { load } = require('../src/config.js');
+  assert.throws(() => load({ PREVIEW_BASE_HOST: 'x.nip.io', GITHUB_AUTH: 'token', GITHUB_TOKEN: 't' }),
+    /GITHUB_WEBHOOK_SECRET is not set/);
+});
+
+test('no credential survives redaction', () => {
+  const { load, redact } = require('../src/config.js');
+  const cfg = load({ PREVIEW_BASE_HOST: 'x.nip.io', GITHUB_AUTH: 'token',
+    GITHUB_TOKEN: 'ghp_a_real_looking_token', GITHUB_WEBHOOK_SECRET: 'w'.repeat(32) });
+  const printed = JSON.stringify(redact(cfg));
+  assert.ok(!printed.includes('ghp_a_real_looking_token'), 'the token appeared in the redacted config');
+  assert.ok(!printed.includes('w'.repeat(32)), 'the webhook secret appeared in the redacted config');
+  assert.match(printed, /\[16 bytes\]|\[\d+ bytes\]/);
+});
+
+test('a token client is not installation-scoped, and says so by returning itself', () => {
+  const { GitHubTokenClient } = require('../src/github/token-client.js');
+  const client = new GitHubTokenClient({ token: 't' });
+  assert.strictEqual(client.forInstallation(12345), client);
+  assert.throws(() => new GitHubTokenClient({}), /needs a token/);
+});

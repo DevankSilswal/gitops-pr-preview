@@ -52,11 +52,23 @@ function load(env = process.env) {
     },
 
     github: {
-      appId: require_('GITHUB_APP_ID', 'the numeric App ID from the GitHub App settings page'),
-      privateKey: require_('GITHUB_APP_PRIVATE_KEY',
-        'the PEM downloaded when the App was created; mount it as GITHUB_APP_PRIVATE_KEY_FILE rather than an env var'),
+      // Two ways to talk to GitHub, and the choice is a security posture rather
+      // than a preference.
+      //
+      //   app    installation tokens, an hour long, scoped to the repositories
+      //          the App was installed on. What this should run as.
+      //   token  a personal access token: long-lived, account-scoped, and it
+      //          acts as the person who issued it. Weaker, and the only option
+      //          that can be set up without a browser — which is why it exists.
+      //
+      // The webhook path is identical either way: a repository webhook signs
+      // with the same HMAC an App does, so nothing about verification changes.
+      authMode: (env.GITHUB_AUTH || 'app').toLowerCase(),
+      appId: fromEnvOrFile(env, 'GITHUB_APP_ID'),
+      privateKey: fromEnvOrFile(env, 'GITHUB_APP_PRIVATE_KEY'),
+      token: fromEnvOrFile(env, 'GITHUB_TOKEN'),
       webhookSecret: require_('GITHUB_WEBHOOK_SECRET',
-        'the shared secret configured on the App; without it the webhook endpoint has no authentication at all'),
+        'the shared secret configured on the App or repository webhook; without it the webhook endpoint has no authentication at all'),
     },
 
     // Public exposure is opt-in and gated on authentication existing. The
@@ -64,6 +76,17 @@ function load(env = process.env) {
     // it, and a control plane that can create environments must not be.
     exposePublicly: env.EXPOSE_PUBLICLY === 'true',
   };
+
+  if (!['app', 'token'].includes(cfg.github.authMode)) {
+    errors.push(`GITHUB_AUTH must be 'app' or 'token', got '${cfg.github.authMode}'`);
+  }
+  if (cfg.github.authMode === 'app') {
+    if (!cfg.github.appId) errors.push('GITHUB_APP_ID is not set — the numeric App ID from the GitHub App settings page');
+    if (!cfg.github.privateKey) errors.push('GITHUB_APP_PRIVATE_KEY is not set — mount it as GITHUB_APP_PRIVATE_KEY_FILE rather than an env var');
+  }
+  if (cfg.github.authMode === 'token' && !cfg.github.token) {
+    errors.push('GITHUB_TOKEN is not set — GITHUB_AUTH=token needs one, and it must be able to write labels and comments on the onboarded repositories');
+  }
 
   if (cfg.exposePublicly && !cfg.github.webhookSecret) {
     errors.push('EXPOSE_PUBLICLY is set without GITHUB_WEBHOOK_SECRET — refusing to put an unauthenticated endpoint on the internet');
@@ -91,8 +114,10 @@ function redact(cfg) {
     platformLimits: cfg.platformLimits,
     exposePublicly: cfg.exposePublicly,
     github: {
-      appId: cfg.github.appId,
+      authMode: cfg.github.authMode,
+      appId: cfg.github.appId || '[absent]',
       privateKey: cfg.github.privateKey ? `[${cfg.github.privateKey.length} bytes]` : '[absent]',
+      token: cfg.github.token ? `[${cfg.github.token.length} bytes]` : '[absent]',
       webhookSecret: cfg.github.webhookSecret ? '[set]' : '[absent]',
     },
   };
