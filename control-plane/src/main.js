@@ -8,6 +8,8 @@ const { createServer } = require('./api/server.js');
 const { PreviewService, AuditService } = require('./services/previews.js');
 const { ArgoCDOrchestrator } = require('./orchestration/orchestrator.js');
 const { KubectlCluster, probe } = require('./orchestration/cluster.js');
+const { InClusterKubernetes } = require('./orchestration/in-cluster.js');
+const { Reconciler } = require('./services/reconciler.js');
 const { GitHubAppClient } = require('./github/app-auth.js');
 const { GitHubTokenClient } = require('./github/token-client.js');
 
@@ -41,7 +43,13 @@ function main() {
   const app = cfg.github.authMode === 'token'
     ? new GitHubTokenClient({ token: cfg.github.token })
     : new GitHubAppClient({ appId: cfg.github.appId, privateKey: cfg.github.privateKey });
-  const cluster = new KubectlCluster();
+  // In the cluster, talk to the API directly with the ServiceAccount. Outside
+  // it — the local scripts — kubectl is what is available and already
+  // configured. The first deployed build only had the kubectl adapter and could
+  // not observe anything at all.
+  const cluster = InClusterKubernetes.available()
+    ? new InClusterKubernetes()
+    : new KubectlCluster();
 
   // One orchestrator per installation: the token is installation-scoped, which
   // is the point of a GitHub App. A repository's installation id is recorded
@@ -59,6 +67,13 @@ function main() {
     store, audit, platformLimits: cfg.platformLimits,
     orchestrator: orchestratorFor(cfg.github.defaultInstallationId),
   });
+
+  // Without this, reconcile() has no caller on a schedule and a preview can
+  // serve 200 indefinitely while the product still reports BUILDING. That is
+  // exactly what the first live pull request through the deployed product did,
+  // for eleven minutes.
+  const reconciler = new Reconciler({ previews, store, log });
+  reconciler.start();
 
   const server = createServer({
     store, previews, audit, cluster, platformLimits: cfg.platformLimits,

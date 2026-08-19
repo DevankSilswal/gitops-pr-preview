@@ -480,3 +480,60 @@ test('a token client is not installation-scoped, and says so by returning itself
   assert.strictEqual(client.forInstallation(12345), client);
   assert.throws(() => new GitHubTokenClient({}), /needs a token/);
 });
+
+// ------------------------------------ found when the first real PR went through
+
+test('the reconciler sweeps live previews and reports what changed', async () => {
+  const { Reconciler } = require('../src/services/reconciler.js');
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR());
+  const preview = f.store.findPreview(f.repo.id, 24);
+
+  const reconciler = new Reconciler({ previews: f.previews, store: f.store, intervalMs: 50 });
+
+  let result = await reconciler.sweep();
+  assert.strictEqual(result.checked, 1);
+  assert.strictEqual(result.changed, 0, 'nothing is serving yet, so nothing should change');
+
+  f.orchestrator.markServing({ owner: 'acme', repo: 'pixel-battle', prNumber: 24 });
+  result = await reconciler.sweep();
+  assert.strictEqual(result.changed, 1);
+  assert.strictEqual(f.store.getPreview(preview.id).status, 'READY',
+    'a sweep is the only thing that makes READY reachable without a human opening the page');
+});
+
+test('one failing preview does not stop the sweep', async () => {
+  const { Reconciler } = require('../src/services/reconciler.js');
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR(1));
+  await f.previews.onPullRequestOpened(openPR(2));
+
+  const real = f.previews.reconcile.bind(f.previews);
+  let first = true;
+  f.previews.reconcile = async (id) => {
+    if (first) { first = false; throw new Error('cluster unreachable'); }
+    return real(id);
+  };
+
+  const result = await new Reconciler({ previews: f.previews, store: f.store }).sweep();
+  assert.strictEqual(result.checked, 2);
+  assert.strictEqual(result.failed, 1, 'the failure should be counted, not swallowed');
+});
+
+test('sweeps do not overlap', async () => {
+  const { Reconciler } = require('../src/services/reconciler.js');
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR());
+  const reconciler = new Reconciler({ previews: f.previews, store: f.store });
+  reconciler.running = true;
+  assert.deepStrictEqual(await reconciler.sweep(), { skipped: true });
+});
+
+test('the in-cluster adapter knows whether it is in a cluster', () => {
+  const { InClusterKubernetes } = require('../src/orchestration/in-cluster.js');
+  const saved = process.env.KUBERNETES_SERVICE_HOST;
+  delete process.env.KUBERNETES_SERVICE_HOST;
+  assert.strictEqual(InClusterKubernetes.available(), false,
+    'outside a cluster it must decline, so main falls back to kubectl');
+  if (saved) process.env.KUBERNETES_SERVICE_HOST = saved;
+});
