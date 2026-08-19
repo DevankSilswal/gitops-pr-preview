@@ -255,7 +255,14 @@ jobs:
       # in. Quoting mistakes in this repository destroy things.
       - name: Lint the shell scripts
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # The runner image ships shellcheck. Installing it anyway cost this
+          # step nothing for months and then hung twice in a row on apt, with
+          # the job burning its fifteen-minute timeout on a package that was
+          # already present. Install only if it is genuinely missing.
+          command -v shellcheck >/dev/null || {
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          }
+          shellcheck --version | head -2
           shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh
 
       # The slug is derived in Ruby by discovery, which decides the hostname
