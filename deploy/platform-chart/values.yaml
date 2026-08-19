@@ -86,5 +86,8 @@ controlPlane:
   githubAuth: token
   secretName: stackpreview-github-app
   ingress:
-    enabled: false
+    # This is the switch that puts an endpoint capable of creating environments
+    # on the internet. Its only authentication is the webhook HMAC, which the
+    # process refuses to start without — see config.js.
+    enabled: true
     subdomain: stackpreview
