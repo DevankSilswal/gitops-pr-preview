@@ -1,0 +1,136 @@
+name: external-watch
+
+# Alerting that survives the thing it watches.
+#
+# Every previous attempt at this ran somewhere that dies with the cluster, or
+# was gated on a variable nobody set: spot-watchdog.yml has completed as
+# `skipped` on every run since it reached main, and alerts-to-issues.yml polls a
+# Prometheus URL that does not exist. Both look green in the run history. That
+# is worse than nothing, because it reads as coverage.
+#
+# This runs on GitHub's infrastructure, needs no secrets, and checks the product
+# the way a person would: by opening the URLs. On 2026-08-20 the node exhausted
+# its memory and production was down for an unknown length of time — unknown
+# precisely because nothing external was looking.
+
+on:
+  schedule:
+    # Every five minutes. GitHub does not guarantee the minute, and under load
+    # a scheduled run can be dropped entirely, so this is a floor on detection
+    # latency rather than a promise about it.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: external-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check the product from outside
+        id: check
+        run: |
+          set -uo pipefail
+
+          BASE=$(awk '/^baseHost:/ {print $2}' deploy/platform-chart/values.yaml)
+          [ -n "$BASE" ] || { echo "no baseHost in the platform chart" >&2; exit 1; }
+          NODE_IP=$(echo "${BASE%.nip.io}" | tr '-' '.')
+
+          fail=""
+          note() { fail="${fail}\n- $1"; echo "DOWN: $1"; }
+
+          # A URL is up when it answers 200 with a certificate the client
+          # trusts. Checking without verification would keep reporting green
+          # through exactly the certificate failure this is meant to catch.
+          for target in "production:https://app.${BASE}/" "demo:https://demo.${BASE}/"; do
+            name="${target%%:*}"; url="${target#*:}"
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url" 2>/dev/null || echo 000)
+            if [ "$code" != "200" ]; then
+              note "$name is not answering — \`$url\` returned \`$code\`"
+            else
+              echo "ok: $name ($code)"
+            fi
+          done
+
+          # The API port answering TCP while TLS times out is what memory
+          # exhaustion looked like from outside on 2026-08-20, so both are
+          # checked and reported separately.
+          if timeout 15 bash -c "</dev/tcp/${NODE_IP}/6443" 2>/dev/null; then
+            echo "ok: kubernetes API port accepts connections"
+            if ! curl -sk --max-time 15 "https://${NODE_IP}:6443/version" >/dev/null 2>&1; then
+              note "the Kubernetes API accepts TCP but will not complete a request — the classic shape of a node thrashing on memory"
+            fi
+          else
+            note "the Kubernetes API port is unreachable at \`${NODE_IP}:6443\` — the node may be down or deallocated"
+          fi
+
+          if [ -n "$fail" ]; then
+            { echo "state=down"; echo "detail<<EOF"; echo -e "${fail#\\n}"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "state=up" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open, update or close the alert
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          STATE: ${{ steps.check.outputs.state }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const LABEL = 'platform-down';
+            const RUN = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            // One issue, reopened and updated. A new issue every five minutes
+            // would be indistinguishable from spam and would train everyone to
+            // ignore the label.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: LABEL, per_page: 100,
+            });
+            const existing = open[0];
+
+            if (process.env.STATE === 'down') {
+              const body = [
+                'The platform is not answering from outside the cluster.',
+                '',
+                process.env.DETAIL,
+                '',
+                `Checked at ${new Date().toISOString()} by [this run](${RUN}).`,
+                '',
+                'Recovery steps are in `docs/runbook.md`. If the node is thrashing rather',
+                'than gone, `systemctl restart k3s` over SSH is what brought it back on',
+                '2026-08-20.',
+              ].join('\n');
+
+              if (existing) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: existing.number, body: `Still down.\n\n${process.env.DETAIL}\n\n[run](${RUN})` });
+                core.setFailed(`platform still down (issue #${existing.number})`);
+              } else {
+                const created = await github.rest.issues.create({
+                  owner, repo, title: 'Platform is down', body, labels: [LABEL],
+                });
+                core.setFailed(`platform down — opened issue #${created.data.number}`);
+              }
+              return;
+            }
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number,
+                body: `Recovered — every external check passed at ${new Date().toISOString()}. [run](${RUN})`,
+              });
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, state: 'closed' });
+              core.info(`closed #${existing.number}`);
+            }
+            core.info('all external checks passed');
