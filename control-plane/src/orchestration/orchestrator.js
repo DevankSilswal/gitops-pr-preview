@@ -105,7 +105,7 @@ class ArgoCDOrchestrator {
    * exactly what failed on 2026-08-13, when every pod was Ready and every URL
    * returned 503 because the ingress controller was refusing the annotation.
    */
-  async status({ slug, prNumber, ageSeconds = 0 }) {
+  async status({ slug, prNumber, ageSeconds = 0, expectedSha = null }) {
     const app = this.applicationFor({ slug, prNumber });
     const url = this.urlFor({ slug, prNumber });
 
@@ -130,9 +130,32 @@ class ArgoCDOrchestrator {
 
     let code = 0;
     try { code = await this.probe(url); } catch { code = 0; }
-    const serving = code === 200;
+    const answering = code === 200;
 
-    if (serving) return { serving: true, phase: 'serving', url, httpStatus: code };
+    if (answering) {
+      // Answering is not the same as serving the commit under review. On a
+      // second push the old pod keeps answering perfectly while the new image
+      // builds, and the first live update through this product reported READY
+      // for eighty seconds while the environment served the previous commit —
+      // which is the reviewer clicking a link and reviewing the wrong thing.
+      //
+      // The application reports its own build at /api/info, so this is
+      // checkable rather than assumable. If it cannot be read, the honest
+      // answer is that the commit is unconfirmed, not that it matches.
+      if (expectedSha) {
+        const served = await this.servedCommit(url);
+        if (served && !served.startsWith(expectedSha.slice(0, 7)) && !expectedSha.startsWith(served.slice(0, 7))) {
+          return { serving: false, phase: 'serving-previous-commit', url, httpStatus: code,
+            detail: `answering with ${served.slice(0, 7)}, waiting for ${expectedSha.slice(0, 7)}` };
+        }
+        if (!served) {
+          return { serving: false, phase: 'commit-unconfirmed', url, httpStatus: code,
+            detail: 'the environment answers but does not report which build it is running' };
+        }
+      }
+      return { serving: true, phase: 'serving', url, httpStatus: code };
+    }
+    const serving = false;
 
     if (health === 'Degraded' || health === 'Missing') {
       const pods = await this.cluster.podFailures(this.namespaceFor({ slug, prNumber }));
@@ -149,6 +172,18 @@ class ArgoCDOrchestrator {
     // up, or something between the hostname and the pod is wrong. Both are
     // "not ready", and the product must not round that up.
     return { serving: false, phase: sync === 'Synced' ? 'starting' : 'syncing', url, httpStatus: code };
+  }
+
+  /** Which build the environment says it is running. Null when it will not say. */
+  async servedCommit(url) {
+    try {
+      const res = await fetch(`${url}/api/info`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return null;
+      const info = await res.json();
+      return typeof info.gitSha === 'string' ? info.gitSha : null;
+    } catch {
+      return null;
+    }
   }
 
   async logs({ slug, prNumber, container, tailLines = 200 }) {
