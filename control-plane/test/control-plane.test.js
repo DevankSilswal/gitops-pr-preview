@@ -550,3 +550,34 @@ test('the in-cluster adapter passes the cluster CA rather than trusting fetch to
   assert.ok(/ca: this\.ca/.test(source), 'the CA must be handed to the request, not merely read');
   assert.ok(!/rejectUnauthorized:\s*false/.test(source), 'verification must never be disabled');
 });
+
+// ------------------------- found when the first real second commit went through
+
+test('READY means the commit under review is serving, not that something answers', async () => {
+  const { ArgoCDOrchestrator } = require('../src/orchestration/orchestrator.js');
+  const cluster = { getApplication: async () => ({ sync: 'Synced', health: 'Healthy' }), podFailures: async () => [] };
+  const orchestrator = new ArgoCDOrchestrator({ github: {}, cluster, probe: async () => 200, baseHost: 't.nip.io' });
+
+  // The old pod answers perfectly while the new image builds. This is the state
+  // the first live update sat in for eighty seconds, reported as READY.
+  orchestrator.servedCommit = async () => '132d801aaaaaaa';
+  const stale = await orchestrator.status({ slug: 's', prNumber: 1, ageSeconds: 60, expectedSha: 'cb2f8a3bbbbbbb' });
+  assert.strictEqual(stale.serving, false, 'reported READY while serving the previous commit');
+  assert.strictEqual(stale.phase, 'serving-previous-commit');
+  assert.match(stale.detail, /132d801.*cb2f8a3/);
+
+  orchestrator.servedCommit = async () => 'cb2f8a3bbbbbbb';
+  const fresh = await orchestrator.status({ slug: 's', prNumber: 1, ageSeconds: 60, expectedSha: 'cb2f8a3bbbbbbb' });
+  assert.strictEqual(fresh.serving, true);
+
+  // An application that will not say which build it is running is unconfirmed,
+  // never assumed to match.
+  orchestrator.servedCommit = async () => null;
+  const silent = await orchestrator.status({ slug: 's', prNumber: 1, ageSeconds: 60, expectedSha: 'cb2f8a3bbbbbbb' });
+  assert.strictEqual(silent.serving, false);
+  assert.strictEqual(silent.phase, 'commit-unconfirmed');
+
+  // With no expectation to check against — a first provision — answering is enough.
+  const first = await orchestrator.status({ slug: 's', prNumber: 1, ageSeconds: 60 });
+  assert.strictEqual(first.serving, true);
+});

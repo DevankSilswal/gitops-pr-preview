@@ -163,7 +163,10 @@ class PreviewService {
     const ageSeconds = Math.max(0, Math.round((Date.now() - Date.parse(startedAt)) / 1000));
 
     const observed = await this.orchestrator.status({ slug: project.slug, prNumber: preview.pr_number,
-      owner: repository.owner, repo: repository.name, ageSeconds });
+      owner: repository.owner, repo: repository.name, ageSeconds,
+      // Which commit this attempt is for. Without it, READY means "something
+      // answers" and a reviewer can be sent to the previous build.
+      expectedSha: attempt ? attempt.commit_sha : null });
 
     if (observed.serving) {
       if (preview.status === state.STATES.READY) {
