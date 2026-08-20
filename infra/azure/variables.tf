@@ -31,7 +31,7 @@ variable "name" {
 # shutdown. See docs/cost.md for what each is actually worth.
 variable "vm_size" {
   type    = string
-  default = "Standard_B2als_v2"
+  default = "Standard_B2as_v2"
 }
 
 # Spot capacity is the single biggest saving available here — roughly a tenth
