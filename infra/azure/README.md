@@ -1,7 +1,37 @@
-# Do not run `terraform apply` against this cluster yet
+# Terraform and this cluster now agree
 
-The configuration here and the live infrastructure have diverged, and Terraform
-resolves that divergence by **destroying the VM**:
+As of 2026-08-21 the plan is non-destructive:
+
+```
+Plan: 0 to add, 1 to change, 0 to destroy.
+  # azurerm_network_security_group.main will be updated in-place
+```
+
+The one remaining change is a tightening: the live NSG allows SSH and the
+Kubernetes API from `*`, and the configuration refuses `0.0.0.0/0` outright, so
+an apply would restrict them to whatever address is named at the time. That is
+an improvement and it is not applied here.
+
+Three defaults described a machine this project does not run, and each would
+have been applied silently:
+
+| variable | said | reality | consequence of applying |
+|---|---|---|---|
+| `use_spot` | `true` | Regular | VM replaced |
+| `auto_shutdown_time` | `"2000"` | no schedule exists | production deallocated nightly |
+| `custom_data` | drifted | boot-time only | VM replaced over a comment edit |
+
+`custom_data` is now ignored, because cloud-init runs once at first boot and an
+edit afterwards changes nothing about a running machine. The VM carries
+`prevent_destroy`, and `scripts/check-terraform-guard.sh` fails CI if that is
+removed or if either default drifts back.
+
+---
+
+## What this section used to say, and why it is kept
+
+The configuration here and the live infrastructure had diverged, and Terraform
+resolved that divergence by **destroying the VM**:
 
 ```
 # azurerm_linux_virtual_machine.k3s must be replaced
@@ -20,7 +50,7 @@ None of those three fields is a size change. The live VM is `Regular`; this
 configuration asks for `Spot`. That drift has existed since before 2026-08-13
 and is the same one recorded in `docs/runbook.md`.
 
-## What to do instead, until it is reconciled
+## Changes Azure can make in place
 
 Changes that Azure can make in place — resizing, in particular — go through the
 CLI, and the corresponding variable here is updated to match so the declared

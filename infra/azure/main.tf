@@ -162,6 +162,24 @@ resource "azurerm_linux_virtual_machine" "k3s" {
   custom_data = base64encode(templatefile("${path.module}/cloud-init.yaml", {
     public_ip = azurerm_public_ip.main.ip_address
   }))
+
+  lifecycle {
+    # Two rules, and both exist because of what nearly happened on 2026-08-20.
+    #
+    # cloud-init runs once, at first boot. Editing it afterwards changes nothing
+    # about a machine that is already up — but Terraform treats custom_data as
+    # replacement-forcing, so an edit to a comment in that file is enough to
+    # propose destroying a running cluster. Ignoring it here says what is
+    # already true: this field only means something to a machine being created.
+    ignore_changes = [custom_data]
+
+    # And a hard stop. The OS disk is declared inline in this resource, so
+    # destroying the VM destroys k3s, ArgoCD, every preview environment and the
+    # control plane database. Nothing about a routine change should be able to
+    # do that: a genuine rebuild means removing this line deliberately, which is
+    # a diff a reviewer can see.
+    prevent_destroy = true
+  }
 }
 
 # Deallocates the VM every night, free of charge.

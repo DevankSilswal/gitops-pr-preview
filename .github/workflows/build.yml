@@ -238,6 +238,12 @@ jobs:
       - name: Fail if a second source of truth for the node address appears
         run: ./scripts/check-base-host.sh
 
+      # The OS disk is inline in the VM resource, so a plan that replaces the
+      # machine destroys the cluster. prevent_destroy stops the apply; this
+      # stops the removal of prevent_destroy.
+      - name: Fail if the production VM loses its destroy protection
+        run: ./scripts/check-terraform-guard.sh
+
       # The control plane's invariants, most of which are refusals: no READY
       # without evidence, no second preview on a redelivered webhook, no
       # destruction of a pinned environment, no logs for a viewer.

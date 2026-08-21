@@ -41,7 +41,14 @@ variable "vm_size" {
 variable "use_spot" {
   type        = bool
   description = "Run the node on Azure Spot capacity"
-  default     = true
+  # False, because the live VM is Regular and has been since it was built. The
+  # default said true for months while reality said otherwise, which meant a
+  # terraform apply would have destroyed the machine to rebuild it as Spot —
+  # taking the OS disk, k3s, ArgoCD, every environment and the control plane
+  # database with it, since the disk is declared inline in the VM resource.
+  #
+  # Turning this on is a deliberate rebuild at a chosen time, not a default.
+  default = false
 }
 
 # Where SSH (22) and the Kubernetes API (6443) may be reached from.
@@ -72,7 +79,14 @@ variable "admin_source_cidr" {
 variable "auto_shutdown_time" {
   type        = string
   description = "Local time to deallocate the VM each night, HHmm. Empty to disable."
-  default     = "2000"
+  # Empty, because no such schedule exists in Azure — the resource is absent and
+  # az returns ResourceNotFound for it. The default said 2000, so an apply would
+  # have created one and started deallocating production every night at eight.
+  #
+  # That also contradicts the permanent demo, whose entire purpose is answering
+  # when nobody is watching. docs/cost.md still describes this saving; it is not
+  # in effect, and the bill has been on-demand all along.
+  default = ""
 }
 
 variable "auto_shutdown_timezone" {
