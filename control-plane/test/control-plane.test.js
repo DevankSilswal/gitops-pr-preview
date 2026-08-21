@@ -844,3 +844,17 @@ test('the dashboard is served, and speaks no Kubernetes', async () => {
     }
   } finally { s.server.close(); }
 });
+
+test('the image ships the scripts that are run inside it', () => {
+  // grant-access.js is invoked with kubectl exec against the running container.
+  // It was written for that and left out of the image, so the first live run
+  // failed with MODULE_NOT_FOUND — the same shape as the cluster adapter that
+  // shelled out to a kubectl the image does not contain.
+  const fs = require('node:fs');
+  const dockerfile = fs.readFileSync(`${__dirname}/../Dockerfile`, 'utf8');
+  const shipped = dockerfile.match(/^COPY\s+(\S+)\s/gm).map((l) => l.split(/\s+/)[1]);
+
+  for (const dir of ['src', 'migrations', 'scripts']) {
+    assert.ok(shipped.includes(dir), `the image does not COPY ${dir}, so anything in it cannot be run inside the container`);
+  }
+});
