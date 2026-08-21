@@ -10,6 +10,8 @@ const { ArgoCDOrchestrator } = require('./orchestration/orchestrator.js');
 const { KubectlCluster, probe } = require('./orchestration/cluster.js');
 const { InClusterKubernetes } = require('./orchestration/in-cluster.js');
 const { Reconciler } = require('./services/reconciler.js');
+const { SessionService } = require('./auth/session.js');
+const { OAuthService } = require('./auth/oauth.js');
 const { GitHubAppClient } = require('./github/app-auth.js');
 const { GitHubTokenClient } = require('./github/token-client.js');
 
@@ -75,14 +77,27 @@ function main() {
   const reconciler = new Reconciler({ previews, store, log });
   reconciler.start();
 
+  // The signing key outlives the process: generated once, kept in the database,
+  // never committed. Restarting does not sign anybody out.
+  const signingKey = cfg.sessionKey
+    || store.getOrCreateSetting('session_signing_key', () => require('node:crypto').randomBytes(32).toString('base64url'));
+  const sessions = new SessionService({ store, signingKey, secureCookies: cfg.exposePublicly });
+
+  const oauth = OAuthService.configured(cfg.oauth)
+    ? new OAuthService({ ...cfg.oauth, secureCookies: cfg.exposePublicly })
+    : null;
+  if (!oauth) {
+    log('warn', 'GitHub sign-in is not configured', {
+      effect: 'the dashboard cannot be signed into; every human endpoint returns 401',
+      fix: 'set GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET — see docs/product/dashboard-access.md',
+    });
+  }
+
   const server = createServer({
     store, previews, audit, cluster, platformLimits: cfg.platformLimits,
     orchestrator: previews.orchestrator,
     webhookSecret: cfg.github.webhookSecret,
-    // No dashboard yet, so no session to resolve. Every human endpoint returns
-    // 401 until sign-in exists — which is the correct behaviour for an API
-    // that can create environments, not a gap.
-    sessionFor: () => null,
+    sessions, oauth,
   });
 
   server.listen(cfg.port, () => {
