@@ -581,3 +581,266 @@ test('READY means the commit under review is serving, not that something answers
   const first = await orchestrator.status({ slug: 's', prNumber: 1, ageSeconds: 60 });
   assert.strictEqual(first.serving, true);
 });
+
+// ------------------------------------------------------------------ sessions
+
+test('a session cookie carries an id and a signature, and nothing else', () => {
+  const { SessionService } = require('../src/auth/session.js');
+  const f = fixture();
+  const sessions = new SessionService({ store: f.store, signingKey: 'k'.repeat(40) });
+  const issued = sessions.issue(f.user.id);
+
+  assert.ok(!issued.value.includes(f.user.id), 'the user id must not be in the cookie');
+  assert.deepStrictEqual(sessions.resolve(issued.value).userId, f.user.id);
+
+  // A tampered id does not verify, so a forged cookie cannot name another user.
+  const [id, sig] = issued.value.split('.');
+  assert.strictEqual(sessions.resolve(`${id}x.${sig}`), null);
+  assert.strictEqual(sessions.resolve(`${id}.${sig}x`), null);
+  assert.strictEqual(sessions.resolve('nonsense'), null);
+  assert.strictEqual(sessions.resolve(''), null);
+});
+
+test('a session signed with a different key is refused', () => {
+  const { SessionService } = require('../src/auth/session.js');
+  const f = fixture();
+  const mine = new SessionService({ store: f.store, signingKey: 'a'.repeat(40) });
+  const theirs = new SessionService({ store: f.store, signingKey: 'b'.repeat(40) });
+  const issued = mine.issue(f.user.id);
+  assert.strictEqual(theirs.resolve(issued.value), null);
+});
+
+test('revoking a session takes effect immediately, and expiry is enforced on read', () => {
+  const { SessionService } = require('../src/auth/session.js');
+  const f = fixture();
+  const sessions = new SessionService({ store: f.store, signingKey: 'k'.repeat(40) });
+
+  const live = sessions.issue(f.user.id);
+  assert.ok(sessions.resolve(live.value));
+  sessions.revoke(live.value);
+  assert.strictEqual(sessions.resolve(live.value), null, 'a revoked session must stop working at once');
+
+  const expired = new SessionService({ store: f.store, signingKey: 'k'.repeat(40), ttlHours: -1 }).issue(f.user.id);
+  assert.strictEqual(sessions.resolve(expired.value), null);
+  assert.strictEqual(f.store.getSession(expired.id), null, 'an expired row should not linger');
+});
+
+test('the cookie is HttpOnly and SameSite, and Secure when publicly exposed', () => {
+  const { SessionService } = require('../src/auth/session.js');
+  const f = fixture();
+  const exposed = new SessionService({ store: f.store, signingKey: 'k'.repeat(40), secureCookies: true });
+  const local = new SessionService({ store: f.store, signingKey: 'k'.repeat(40), secureCookies: false });
+
+  const c = exposed.cookie('v');
+  assert.match(c, /HttpOnly/); assert.match(c, /SameSite=Lax/); assert.match(c, /Secure/);
+  assert.ok(!local.cookie('v').includes('Secure'), 'Secure would make the cookie useless over plain http locally');
+  assert.match(exposed.clearCookie(), /Max-Age=0/);
+});
+
+test('a weak signing key is refused rather than accepted quietly', () => {
+  const { SessionService } = require('../src/auth/session.js');
+  const f = fixture();
+  assert.throws(() => new SessionService({ store: f.store, signingKey: 'short' }), /at least 32/);
+});
+
+// --------------------------------------------------------------------- OAuth
+
+test('the OAuth state is compared in constant time and must match', () => {
+  const { OAuthService } = require('../src/auth/oauth.js');
+  const oauth = new OAuthService({ clientId: 'id', clientSecret: 'secret', callbackUrl: 'https://x/cb' });
+  const { url, state, cookie } = oauth.begin();
+
+  assert.match(url, /^https:\/\/github\.com\/login\/oauth\/authorize/);
+  assert.ok(url.includes(`state=${state}`));
+  assert.ok(url.includes('scope=read%3Auser'), 'ask for identity and nothing wider');
+  assert.ok(!url.includes('secret'), 'the client secret must never reach the browser');
+  assert.match(cookie, /HttpOnly/);
+
+  assert.strictEqual(OAuthService.stateMatches(state, OAuthService.readState(cookie)), true);
+  assert.strictEqual(OAuthService.stateMatches(state, 'something-else'), false);
+  // A missing state on either side is a failure, never a pass.
+  assert.strictEqual(OAuthService.stateMatches(null, state), false);
+  assert.strictEqual(OAuthService.stateMatches(state, null), false);
+  assert.strictEqual(OAuthService.stateMatches('', ''), false);
+});
+
+test('OAuth is only considered configured when both halves are present', () => {
+  const { OAuthService } = require('../src/auth/oauth.js');
+  assert.strictEqual(OAuthService.configured({ clientId: 'a', clientSecret: 'b' }), true);
+  assert.strictEqual(OAuthService.configured({ clientId: 'a' }), false);
+  assert.strictEqual(OAuthService.configured({ clientSecret: 'b' }), false);
+  assert.strictEqual(OAuthService.configured(null), false);
+});
+
+// ------------------------------------------------- the API, over real HTTP
+
+const { createServer } = require('../src/api/server.js');
+const { SessionService } = require('../src/auth/session.js');
+
+/** A running server over the real fixture, with a real signed session. */
+async function serve(f, { role = 'developer' } = {}) {
+  f.store.db.prepare('UPDATE memberships SET role = ? WHERE user_id = ?').run(role, f.user.id);
+  const sessions = new SessionService({ store: f.store, signingKey: 'k'.repeat(40), secureCookies: false });
+  const server = createServer({
+    store: f.store, previews: f.previews, audit: f.audit, orchestrator: f.orchestrator,
+    cluster: { platformHealth: async () => ({ node: { name: 'test', ready: true }, applications: { total: 1, synced: 1, healthy: 1 } }) },
+    platformLimits: PLATFORM, webhookSecret: 'shh', sessions, oauth: null,
+  });
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const cookie = `stackpreview_session=${sessions.issue(f.user.id).value}`;
+  const call = async (path, opts = {}) => {
+    const res = await fetch(base + path, { redirect: 'manual', ...opts });
+    const text = await res.text();
+    let body; try { body = JSON.parse(text); } catch { body = text; }
+    return { status: res.status, body, headers: res.headers };
+  };
+  return { server, call, cookie, signedIn: (p, o = {}) => call(p, { ...o, headers: { cookie, ...(o.headers || {}) } }) };
+}
+
+test('every protected endpoint refuses an anonymous caller', async () => {
+  const f = fixture();
+  const s = await serve(f);
+  try {
+    for (const path of ['/api/projects', '/api/previews', '/api/me', '/api/platform/capacity', '/api/audit']) {
+      const res = await s.call(path);
+      assert.strictEqual(res.status, 401, `${path} answered ${res.status} without a session`);
+      assert.strictEqual(res.body.error.code, 'unauthenticated');
+    }
+  } finally { s.server.close(); }
+});
+
+test('a forged session cookie is not a session', async () => {
+  const f = fixture();
+  const s = await serve(f);
+  try {
+    const forged = await s.call('/api/me', { headers: { cookie: 'stackpreview_session=made.up' } });
+    assert.strictEqual(forged.status, 401);
+  } finally { s.server.close(); }
+});
+
+test('a signed-in caller sees themselves and their real previews', async () => {
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR());
+  const s = await serve(f);
+  try {
+    const me = await s.signedIn('/api/me');
+    assert.strictEqual(me.status, 200);
+    assert.strictEqual(me.body.user.login, 'dev');
+
+    const previews = await s.signedIn('/api/previews');
+    assert.strictEqual(previews.status, 200);
+    assert.strictEqual(previews.body.previews.length, 1, 'the dashboard must show the real row, not a fixture');
+    assert.strictEqual(previews.body.previews[0].pullRequest.number, 24);
+    assert.ok(previews.body.previews[0].statusText, 'the UI needs a human status, not only the enum');
+  } finally { s.server.close(); }
+});
+
+test('a caller sees nothing belonging to an organization they are not in', async () => {
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR());
+  // A second organization with its own project, repository and preview.
+  const other = f.store.createOrganization({ name: 'Other', githubLogin: 'other' });
+  const otherProject = f.store.createProject({ organizationId: other.id, name: 'Theirs', slug: 'theirs' });
+  const otherRepo = f.store.connectRepository({ projectId: otherProject.id, owner: 'other', name: 'app', imageRepository: 'ghcr.io/other/app' });
+  f.store.createPreview({ repositoryId: otherRepo.id, prNumber: 1, status: 'READY', statusReason: 'Ready' });
+
+  const s = await serve(f);
+  try {
+    const previews = await s.signedIn('/api/previews');
+    assert.strictEqual(previews.body.previews.length, 1, 'a preview from another organization leaked into the list');
+
+    const project = await s.signedIn(`/api/projects/${otherProject.id}`);
+    assert.strictEqual(project.status, 403, 'another organization\'s project must not be readable');
+  } finally { s.server.close(); }
+});
+
+test('a viewer may see a preview and may not read its logs or act on it', async () => {
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR());
+  const preview = f.store.findPreview(f.repo.id, 24);
+  const s = await serve(f, { role: 'viewer' });
+  try {
+    assert.strictEqual((await s.signedIn(`/api/previews/${preview.id}`)).status, 200);
+    assert.strictEqual((await s.signedIn(`/api/previews/${preview.id}/logs`)).status, 403);
+    assert.strictEqual((await s.signedIn(`/api/previews/${preview.id}/redeploy`, { method: 'POST' })).status, 403);
+    assert.strictEqual((await s.signedIn(`/api/previews/${preview.id}`, { method: 'DELETE' })).status, 403);
+  } finally { s.server.close(); }
+});
+
+test('a developer may act on a preview, and the action reaches the orchestrator', async () => {
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR());
+  const preview = f.store.findPreview(f.repo.id, 24);
+  const s = await serve(f, { role: 'developer' });
+  try {
+    const before = f.orchestrator.calls.length;
+    assert.strictEqual((await s.signedIn(`/api/previews/${preview.id}/redeploy`, { method: 'POST' })).status, 202);
+    assert.ok(f.orchestrator.calls.length > before, 'redeploy did not reach the orchestrator');
+
+    const destroyed = await s.signedIn(`/api/previews/${preview.id}`, { method: 'DELETE' });
+    assert.strictEqual(destroyed.status, 202);
+    assert.strictEqual(f.store.getPreview(preview.id).status, 'DESTROYED');
+  } finally { s.server.close(); }
+});
+
+test('a pinned preview refuses destruction through the API', async () => {
+  const f = fixture();
+  await f.previews.onPullRequestOpened(openPR());
+  const preview = f.store.findPreview(f.repo.id, 24);
+  f.store.setLifecycle(preview.id, 'pinned');
+  const s = await serve(f, { role: 'admin' });
+  try {
+    const res = await s.signedIn(`/api/previews/${preview.id}`, { method: 'DELETE' });
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.error.code, 'pinned');
+    assert.strictEqual(f.store.getPreview(preview.id).destroyed_at, null);
+  } finally { s.server.close(); }
+});
+
+test('signing out revokes the session for real', async () => {
+  const f = fixture();
+  const s = await serve(f);
+  try {
+    assert.strictEqual((await s.signedIn('/api/me')).status, 200);
+    await s.signedIn('/auth/logout');
+    assert.strictEqual((await s.signedIn('/api/me')).status, 401, 'the cookie still worked after signing out');
+  } finally { s.server.close(); }
+});
+
+test('sign-in says it is not configured rather than failing obscurely', async () => {
+  const f = fixture();
+  const s = await serve(f);
+  try {
+    const res = await s.call('/auth/github');
+    assert.strictEqual(res.status, 501);
+    assert.strictEqual(res.body.error.code, 'oauth_not_configured');
+  } finally { s.server.close(); }
+});
+
+test('the dashboard is served, and speaks no Kubernetes', async () => {
+  const f = fixture();
+  const s = await serve(f);
+  try {
+    const page = await s.call('/');
+    assert.strictEqual(page.status, 200);
+    assert.match(page.body, /StackPreview/);
+
+    const app = await s.call('/dashboard/app.js');
+    assert.strictEqual(app.status, 200);
+
+    // Comments are not product surface. The first version of this check read
+    // the raw file and failed on the comment at the top of app.js explaining
+    // that the dashboard does not say 'namespace' — which is true, and was the
+    // only place the word appeared.
+    const surface = app.body
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+
+    for (const word of ['kubectl', 'ApplicationSet', 'namespace', 'ReplicaSet', 'apiVersion', 'Ingress']) {
+      assert.ok(!new RegExp(`\\b${word}\\b`, 'i').test(surface),
+        `the dashboard shows ${word}; it should speak about previews, deployments and commits`);
+    }
+  } finally { s.server.close(); }
+});

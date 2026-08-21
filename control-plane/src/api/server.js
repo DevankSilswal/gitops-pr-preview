@@ -11,8 +11,12 @@
 'use strict';
 
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 const auth = require('../auth/authorize.js');
 const webhook = require('../github/webhook.js');
+const { SessionService } = require('../auth/session.js');
+const { OAuthService } = require('../auth/oauth.js');
 
 const json = (res, status, body) => {
   const payload = JSON.stringify(body);
@@ -38,10 +42,30 @@ function readBody(req, limit = 1024 * 1024) {
   });
 }
 
-function createServer({ store, previews, audit, orchestrator, cluster, platformLimits, webhookSecret, sessionFor }) {
+function createServer({ store, previews, audit, orchestrator, cluster, platformLimits,
+                       webhookSecret, sessions, oauth, sessionFor }) {
+  const DASHBOARD = path.join(__dirname, '..', 'dashboard');
+
+  // The dashboard is static and tiny. Serving it from the control plane keeps
+  // the product one process and one origin, which is also why the session
+  // cookie can be SameSite=Lax rather than something looser.
+  const serveFile = (res, file, type) => {
+    try {
+      const body = fs.readFileSync(path.join(DASHBOARD, file));
+      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache' });
+      res.end(body);
+    } catch {
+      fail(res, 404, 'not_found', 'no such file');
+    }
+  };
+
+  // Resolve the caller from the signed session cookie unless the caller
+  // supplied their own resolver, which the tests do.
+  const resolveSession = sessionFor || ((req) =>
+    (sessions ? sessions.resolve(SessionService.parse(req.headers.cookie)) : null));
   /** Resolve the caller. Never trusts a header that names a role. */
   const actorFrom = (req) => {
-    const session = sessionFor(req);
+    const session = resolveSession(req);
     return session ? store.actorFor(session.userId) : null;
   };
 
@@ -77,6 +101,74 @@ function createServer({ store, previews, audit, orchestrator, cluster, platformL
 
   const routes = [
     ['GET', /^\/api\/health$/, async (req, res) => json(res, 200, { status: 'ok' })],
+
+    // --- the dashboard ------------------------------------------------------
+    ['GET', /^\/$/, async (req, res) => serveFile(res, 'index.html', 'text/html; charset=utf-8')],
+    ['GET', /^\/dashboard\/app\.js$/, async (req, res) => serveFile(res, 'app.js', 'text/javascript; charset=utf-8')],
+
+    // --- sign in ------------------------------------------------------------
+    ['GET', /^\/auth\/github$/, async (req, res) => {
+      if (!oauth) {
+        return fail(res, 501, 'oauth_not_configured',
+          'GitHub sign-in is not set up on this installation. See docs/product/dashboard-access.md.');
+      }
+      const { url, cookie } = oauth.begin();
+      res.writeHead(302, { location: url, 'set-cookie': cookie });
+      res.end();
+    }],
+
+    ['GET', /^\/auth\/github\/callback$/, async (req, res) => {
+      if (!oauth) return fail(res, 501, 'oauth_not_configured', 'GitHub sign-in is not set up');
+      const url = new URL(req.url, 'http://localhost');
+      const expected = OAuthService.readState(req.headers.cookie);
+
+      // A callback whose state does not match the cookie is either a stale tab
+      // or somebody trying to sign this browser into an account it did not ask
+      // for. Neither deserves a session.
+      if (!OAuthService.stateMatches(url.searchParams.get('state'), expected)) {
+        return fail(res, 400, 'bad_state', 'this sign-in did not start here; try again');
+      }
+      const code = url.searchParams.get('code');
+      if (!code) return fail(res, 400, 'missing_code', 'GitHub did not return an authorization code');
+
+      let identity;
+      try {
+        identity = await oauth.identify(code);
+      } catch (err) {
+        console.error(JSON.stringify({ level: 'warn', message: 'oauth exchange failed', error: String(err.message) }));
+        return fail(res, 502, 'oauth_failed', 'GitHub would not complete the sign-in');
+      }
+
+      const user = store.upsertUser(identity);
+      const session = sessions.issue(user.id);
+      audit.record({ actorUserId: user.id, action: 'user.signed_in', subjectType: 'user', subjectId: user.id });
+      res.writeHead(302, {
+        location: '/',
+        'set-cookie': [oauth.clearStateCookie(), sessions.cookie(session.value)],
+      });
+      res.end();
+    }],
+
+    ['GET', /^\/auth\/logout$/, async (req, res) => {
+      const cookie = SessionService.parse(req.headers.cookie);
+      if (cookie && sessions) sessions.revoke(cookie);
+      res.writeHead(302, { location: '/', 'set-cookie': sessions ? sessions.clearCookie() : '' });
+      res.end();
+    }],
+
+    ['GET', /^\/api\/me$/, async (req, res) => {
+      const session = resolveSession(req);
+      if (!session) return fail(res, 401, 'unauthenticated', 'sign in to continue');
+      const user = store.getUser(session.userId);
+      if (!user) return fail(res, 401, 'unauthenticated', 'sign in to continue');
+      const actor = store.actorFor(user.id);
+      return json(res, 200, {
+        user: { id: user.id, login: user.login, avatarUrl: user.avatar_url },
+        // Roles are reported so the dashboard can hide what it should, which is
+        // a courtesy. Every one of them is enforced again on the server.
+        organizations: actor.roleByOrg,
+      });
+    }],
 
     ['POST', /^\/api\/webhooks\/github$/, async (req, res) => {
       const rawBody = await readBody(req);

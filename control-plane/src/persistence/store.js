@@ -213,6 +213,33 @@ function createStore(db) {
     },
     listAudit: (orgId, limit = 100) => all('SELECT * FROM audit_events WHERE organization_id = ? ORDER BY created_at DESC LIMIT ?', orgId, limit),
 
+    // --- platform settings ------------------------------------------------------
+    /**
+     * Small persistent values the platform generates for itself — the session
+     * signing key, so far. Kept in the database rather than an environment
+     * variable so a restart does not sign everybody out, and generated rather
+     * than committed so it is never in git.
+     */
+    getOrCreateSetting(key, generate) {
+      db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, created_at TEXT NOT NULL)');
+      const existing = one('SELECT value FROM settings WHERE key = ?', key);
+      if (existing) return existing.value;
+      const value = generate();
+      run('INSERT INTO settings (key,value,created_at) VALUES (?,?,?)', key, value, nowIso());
+      return value;
+    },
+
+    // --- sessions -------------------------------------------------------------
+    createSession({ id, userId, expiresAt }) {
+      run('INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)',
+        id, userId, nowIso(), expiresAt);
+      return { id, user_id: userId, expires_at: expiresAt };
+    },
+    getSession: (id) => one('SELECT * FROM sessions WHERE id = ?', id),
+    deleteSession: (id) => run('DELETE FROM sessions WHERE id = ?', id),
+    deleteSessionsFor: (userId) => run('DELETE FROM sessions WHERE user_id = ?', userId),
+    getUser: (id) => one('SELECT * FROM users WHERE id = ?', id),
+
     // --- webhook idempotency --------------------------------------------------
     recordWebhookEvent({ deliveryId, eventType, receivedAt }) {
       const row = { id: id('whk'), delivery_id: deliveryId, event_type: eventType, received_at: receivedAt };

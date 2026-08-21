@@ -71,6 +71,21 @@ function load(env = process.env) {
         'the shared secret configured on the App or repository webhook; without it the webhook endpoint has no authentication at all'),
     },
 
+    // Signing key for session cookies. Generated on first start and kept in
+    // the database, so restarting does not sign everybody out and nothing has
+    // to be committed anywhere.
+    sessionKey: fromEnvOrFile(env, 'SESSION_SIGNING_KEY'),
+
+    // Sign-in with GitHub. A separate OAuth App from the credential that talks
+    // to repositories: one says who is looking at the dashboard, the other says
+    // what the platform may do, and conflating them would hand every visitor
+    // the platform's own permissions.
+    oauth: {
+      clientId: fromEnvOrFile(env, 'GITHUB_OAUTH_CLIENT_ID'),
+      clientSecret: fromEnvOrFile(env, 'GITHUB_OAUTH_CLIENT_SECRET'),
+      callbackUrl: env.GITHUB_OAUTH_CALLBACK_URL,
+    },
+
     // Public exposure is opt-in and gated on authentication existing. The
     // endpoint is reachable from the internet the moment an Ingress points at
     // it, and a control plane that can create environments must not be.
@@ -120,6 +135,13 @@ function redact(cfg) {
       token: cfg.github.token ? `[${cfg.github.token.length} bytes]` : '[absent]',
       webhookSecret: cfg.github.webhookSecret ? '[set]' : '[absent]',
     },
+    oauth: {
+      configured: Boolean(cfg.oauth.clientId && cfg.oauth.clientSecret),
+      clientId: cfg.oauth.clientId || '[absent]',
+      clientSecret: cfg.oauth.clientSecret ? '[set]' : '[absent]',
+      callbackUrl: cfg.oauth.callbackUrl || '[absent]',
+    },
+    sessionKey: cfg.sessionKey ? '[set]' : '[generated at start]',
   };
 }
 
