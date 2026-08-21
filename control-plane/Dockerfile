@@ -10,6 +10,11 @@ WORKDIR /app
 COPY package.json ./
 COPY src ./src
 COPY migrations ./migrations
+# The operator scripts run with kubectl exec against this image, so they have to
+# be in it. grant-access.js was written for exactly that and then not copied,
+# which is the same mistake as the cluster adapter that shelled out to a kubectl
+# the image does not contain: written for the container, verified on a laptop.
+COPY scripts ./scripts
 
 # The volume is the only writable path; the root filesystem is read-only in the
 # pod spec.
